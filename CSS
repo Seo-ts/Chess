@@ -1,0 +1,125 @@
+body {
+  font-family: Arial, sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  margin: 0;
+  background-color: #f4f4f4;
+ }
+
+ #game {
+  text-align: center;
+  display: flex;
+  flex-direction: column; /* 콘텐츠를 세로로 배치 */
+  align-items: center; /* 중앙 정렬 */
+ }
+
+ #chessboard {
+  display: grid;
+  grid-template-columns: repeat(8, 60px);
+  grid-template-rows: repeat(8, 60px);
+  gap: 0;
+  margin-bottom: 20px;
+ }
+
+ .cell {
+  width: 60px;
+  height: 60px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-color: #779556;
+  border: 1px solid #333;
+ }
+
+ .cell:nth-child(even) {
+  background-color: #ebecd0;
+ }
+
+ button {
+  padding: 10px 20px;
+  font-size: 16px;
+  cursor: pointer;
+  margin-top: 10px;
+ }
+
+ .promotion-popup {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: white;
+  padding: 20px;
+  border: 2px solid black;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  z-index: 1000;
+ }
+
+ .promotion-popup p {
+  margin-bottom: 10px;
+  font-weight: bold;
+ }
+
+ .promotion-popup span {
+  font-size: 24px;
+  cursor: pointer;
+  margin: 5px;
+ }
+
+ .captured-pieces {
+  display: grid;
+  grid-template-columns: repeat(8, 20px); /* Adjusted cell size for storage */
+  grid-template-rows: auto; /* Let rows adjust to content */
+  gap: 5px;
+  width : 50%;
+  margin-top: 10px;
+  margin-bottom: 20px;
+  justify-content: center; /* Center items horizontally */
+ }
+
+ .storage-cell {
+  width: 20px; /* Adjusted cell size for storage */
+  height: 20px; /* Adjusted cell size for storage */
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-color: #f0f0f0; /* Different background for storage */
+  border: 1px solid #ccc;
+ }
+
+ .storage-cell.selected {
+  border: 2px solid blue; /* Visual feedback for selected storage cell */
+ }
+
+ /* Style for captured pieces images - smaller size */
+ .captured-pieces img.piece {
+  max-width: 80%; /* Adjust as needed */
+  max-height: 80%; /* Adjust as needed */
+ }
+     
+.captured-pieces-container {
+  display: flex; /* 수평 방향으로 배치 */
+  justify-content: space-between; /* 양 끝으로 정렬 */
+  width: 100%; /* 전체 너비를 채움 */
+  margin-top: 10px; /* 상단 여백 */
+}
+
+.cell.highlight {
+    background-color: #ffeb3b !important; /* 노란색으로 강조 */
+    opacity: 0.7;
+}
+
+#status {
+    color: #333;
+    font-weight: bold;
+}
+
+.piece {
+    display: block;
+    text-align: center;
+    line-height: 60px;
+    font-size: 40px;
+}
