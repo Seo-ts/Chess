@@ -1192,8 +1192,8 @@ const resetGame = () => {
     aiPlayedBlackLastGame = (aiColor === 'black');
 
     console.log(`--- New Game ---`);
-    console.log(`AI plays: ${aiColor}. Player plays: ${aiColor === 'white' ? 'black' : 'white'}.`);
-    console.log(`White always starts.`);
+    //console.log(`AI plays: ${aiColor}. Player plays: ${aiColor === 'white' ? 'black' : 'white'}.`);
+    //console.log(`White always starts.`);
 
     // 2. Reset board and state
     createBoard();
