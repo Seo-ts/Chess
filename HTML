@@ -1,22 +1,90 @@
-<html lang="en">
- <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>체스 게임</title>
-
- </head>
- <body>
 <div id="game">
+    <!-- ... 기존 상단 제어부 ... -->
+    <div class="controls-container">
+        <div class="mode-selection">
+            <button id="aiMatchBtn" class="btn mode-btn active">AI</button>
+            <button id="pvpMatchBtn" class="btn mode-btn">PvP</button>
+            <!-- 설정 버튼 추가 -->
+            <button id="settingsBtn" class="btn settings-icon-btn">⚙️</button>
+        </div>
+    </div>
+    
+    <!-- ... 기존 보드 및 상태 표시 ... -->
     <div id="status" style="display: none; font-size: 20px; margin-bottom: 10px;">AI Thinking...</div>
+  
+  <div class="chess-clocks">
+    <div id="blackClock" class="clock">Black: 10:00</div>
+    <div id="whiteClock" class="clock">White: 10:00</div>
+</div>
+  
     <div id="chessboard"></div>
+    
+    <!-- ... 기존 캡처 기물 창 ... -->
     <div class="captured-pieces-container">
         <p>White Captured</p>
         <div id="whiteCapturedPieces" class="captured-pieces"></div>
         <p>Black Captured</p>
         <div id="blackCapturedPieces" class="captured-pieces"></div>
     </div>
-    <button id="reset">리셋</button>
+    
+    <button id="reset" class="btn reset-btn">RESET</button>
 </div>
 
- </body>
- </html>
+<!-- 설정 모달창 구조 추가 -->
+<div id="settingsModal" class="modal">
+    <div class="modal-content">
+        <h3>게임 설정</h3>
+        
+        <div class="setting-item">
+            <label>미들게임 연산 깊이 (Depth): <span id="midDepthVal">3</span></label>
+            <input type="range" id="midDepthRange" min="1" max="6" step="1" value="3">
+        </div>
+        
+        <div class="setting-item">
+            <label>엔드게임 연산 깊이 (Depth): <span id="endDepthVal">5</span></label>
+            <input type="range" id="endDepthRange" min="3" max="8" step="1" value="5">
+        </div>
+      
+        <div class="setting-item">
+    <label>시간 제한 모드 (PvP)</label>
+    <select id="timeControlMode">
+        <option value="none">시간 제한 없음</option>
+        <option value="fisher">피셔 (보너스)</option>
+        <option value="delay">딜레이 (유예)</option>
+    </select>
+</div>
+
+<div id="timeSettings" style="display: none;">
+    <div class="setting-item">
+        <label>기본 시간 (분): <span id="baseTimeVal">10</span>분</label>
+        <input type="range" id="baseTimeRange" min="1" max="60" step="1" value="10">
+    </div>
+    <div class="setting-item">
+        <label>추가/유예 시간 (초): <span id="incTimeVal">5</span>초</label>
+        <input type="range" id="incTimeRange" min="0" max="30" step="1" value="5">
+    </div>
+</div>
+        
+        <div class="setting-item">
+            <input type="checkbox" id="drawWarningCheck" checked> 무승부 수 강조
+        </div>
+      <div class="setting-item">
+    <label>
+        <input type="checkbox" id="openingBookCheck" checked> AI 오프닝 북 사용
+    </label>
+</div>
+      
+      <div class="setting-item">
+    <label>체스 보드 테마</label>
+    <select id="boardThemeSelect">
+        <option value="forest">Forest (Green)</option>
+        <option value="ocean">Ocean (Blue)</option>
+        <option value="tournament">Tournament (Brown)</option>
+        <option value="midnight">Midnight (Gray)</option>
+        <option value="vintage">Vintage (Wood)</option>
+    </select>
+</div>
+        
+        <button id="closeSettings" class="btn close-btn">적용 및 닫기</button>
+    </div>
+</div>
