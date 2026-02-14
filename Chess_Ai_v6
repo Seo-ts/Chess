@@ -2307,43 +2307,48 @@ const recordKillerMove = (move, ply, depth, boardState) => {
     historyTable[historyKey] = (historyTable[historyKey] || 0) + depth * depth;
 };
 
+/////////////////
 const handleDrawScore = (boardState, maximizingPlayer, ply) => {
     const phase = getGamePhase(boardState);
-  ///////////
-    const staticEval = (aiColor === 'black') ?  evaluateBoard(boardState):-evaluateBoard(boardState);
-  ///////////
+    const eval = evaluateBoard(boardState); // 항상 흑 기준 (Positive = Black leads)
     
-    // 미들게임에서는 무승부 자체를 약간 기분 나쁜 것
-    const drawBaseScore = (phase === 'middlegame') ? -0.2 : 0;
+    // 1. 현재 국면에서 무승부 혐오 지수 (Contempt Factor)
+    // 미들게임에서는 0.5점(폰 반개) 정도 손해를 보더라도 게임을 계속하게 함
+    const contempt = (phase === 'middlegame') ? 0.5 : 0.1;
 
-    // 2. [임계값 설정] 국면에 따라 완전히 다르게 적용
-    let winThreshold, lossThreshold;
+    // 2. 현재 수 차례인 플레이어(maximizingPlayer)가 유리한지 판단
+    // maximizingPlayer === true -> 흑의 턴
+    // maximizingPlayer === false -> 백의 턴
+    let isWinning = false;
+    let isLosing = false;
 
-    if (phase === 'middlegame') {
-        winThreshold = 1.0;   // 폰 1.0개 이상 유리해야 무승부 거부
-        lossThreshold = -3.0; // [수정] 기물 하나(나이트/비숍) 가까이 밀려야만 무승부 구걸
-    } else {
-        winThreshold = 0.5;   // 엔드게임은 미세한 유리함에도 무승부 거부
-        lossThreshold = -0.8; // 엔드게임은 폰 하나만 밀려도 무승부 유도 (영리함)
+    const winThreshold = (phase === 'middlegame') ? 1.5 : 0.8;
+    const lossThreshold = (phase === 'middlegame') ? -1.5 : -0.8;
+
+    if (maximizingPlayer) { // 흑의 턴
+        if (eval > winThreshold) isWinning = true;
+        if (eval < lossThreshold) isLosing = true;
+    } else { // 백의 턴
+        if (eval < -winThreshold) isWinning = true;
+        if (eval > -lossThreshold) isLosing = true;
     }
 
-    // 3. 점수 판정
-    // AI가 압도적으로 유리한 경우: 무승부는 패배와 다름없음
-    if (staticEval > winThreshold) {
-        return maximizingPlayer ? (-5000 - ply) : (5000 + ply);
-        console.log("Avoiding Draw (5000pts Penalty applied)");
+    // 3. 점수 결정
+    if (isWinning) {
+        // 내가 유리한데 무승부가 된다? -> 나에게 매우 나쁜 점수 반환
+        // 흑(Max)이면 아주 낮은 점수, 백(Min)이면 아주 높은 점수
+        return maximizingPlayer ? (-5000 + ply) : (5000 - ply);
     }
-    
-    // AI가 압도적으로 불리한 경우: 무승부는 기적적인 구원
-    if (staticEval < lossThreshold) {
+
+    if (isLosing) {
+        // 내가 불리한데 무승부가 된다? -> 나에게 매우 좋은 점수 반환
         return maximizingPlayer ? (5000 - ply) : (-5000 + ply);
-        console.log("Choose Draw (5000pts Bonus applied)");
     }
 
-    // 그 사이의 상황 (비등하거나 약간 밀릴 때)
-    // 미들게임에서는 drawBaseScore(-0.2) 때문에 무승부보다 게임을 계속 진행하는 것을 선호함
-    return drawBaseScore;
+    // 비등한 상황: 현재 턴인 사람에게 약간의 감점(Contempt)을 주어 무승부 회피 유도
+    return maximizingPlayer ? -contempt : contempt;
 };
+///////////////
 
 const simulateMove = (boardState, move) => {
     const newBoard = boardState.map(row => [...row]);
