@@ -29,7 +29,7 @@ body {
   display: flex;
   justify-content: center;
   align-items: center;
-  background-color: #779556;
+  //background-color: #779556;
   border: 1px solid #333;
  }
 
@@ -108,9 +108,9 @@ body {
 }
 
 .cell.highlight {
-    background-color: #ffeb3b !important; /* 노란색으로 강조 */
+    background-color: #ffeb3b !important;
     opacity: 0.7;
-}
+} 
 
 #status {
     color: #333;
@@ -123,3 +123,200 @@ body {
     line-height: 60px;
     font-size: 40px;
 }
+
+.cell.highlight-draw {
+    background-color: #fca503 !important; 
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+    cursor: help;
+}
+
+/* 컨트롤 컨테이너 정렬 */
+.controls-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.mode-selection {
+    display: flex;
+    gap: 10px;
+}
+
+/* 공통 버튼 스타일 */
+.btn {
+    border: none;
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-size: 16px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    box-shadow: 0 4px 0 rgba(0, 0, 0, 0.2);
+}
+
+.btn:active {
+    transform: translateY(2px);
+    box-shadow: 0 2px 0 rgba(0, 0, 0, 0.2);
+}
+
+/* 모드 선택 버튼 (비활성 상태) */
+.mode-btn {
+    background-color: #454341;
+    color: #bab9b8;
+}
+
+.mode-btn:hover {
+    background-color: #5d5b59;
+    color: #ffffff;
+}
+
+/* 모드 선택 버튼 (활성 상태 - Chess.com 그린) */
+.mode-btn.active {
+    background-color: #81b64c;
+    color: #ffffff;
+    box-shadow: 0 4px 0 #5d8a35;
+}
+
+.mode-btn.active:hover {
+    background-color: #a3d16a;
+}
+
+/* 리셋 버튼 스타일 (오렌지/그레이 계열) */
+.reset-btn {
+    background-color: #312e2b;
+    color: #ffffff;
+    border: 2px solid #454341;
+    width: 200px;
+}
+
+.reset-btn:hover {
+    background-color: #454341;
+    border-color: #81b64c;
+}
+
+//=======================
+
+/* 설정 버튼 스타일 */
+.settings-icon-btn {
+    background: #f0f0f0;
+    border: 1px solid #ccc;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 5px 10px;
+    border-radius: 5px;
+}
+
+/* 모달 스타일 */
+.modal {
+    display: none; /* 기본은 숨김 */
+    position: fixed;
+    z-index: 2000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.5);
+}
+
+.modal-content {
+    background-color: #fff;
+    margin: 15% auto;
+    padding: 20px;
+    border-radius: 10px;
+    width: 300px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+}
+
+.setting-item {
+    margin-bottom: 20px;
+}
+
+.setting-item label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.setting-item input[type="range"] {
+    width: 100%;
+}
+
+.close-btn {
+    width: 100%;
+    background-color: #779556;
+    color: white;
+    padding: 10px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+/* 시계 컨테이너 */
+.chess-clocks {
+    display: none; /* 기본적으로 숨김 (JS에서 모드에 따라 표시) */
+    justify-content: space-between;
+    margin-bottom: 15px;
+    gap: 10px;
+}
+
+/* 개별 시계 스타일 - 설정 버튼(@.settings-icon-btn) 디자인 계승 */
+.clock {
+    flex: 1;
+    padding: 12px;
+    background: #ffffff;      /* 설정 버튼과 동일한 화이트 */
+    border: 1px solid #ddd;   /* 설정 버튼과 동일한 테두리 */
+    color: #333;              /* 어두운 텍스트 */
+    border-radius: 8px;       /* 약간 둥근 모서리 */
+    font-size: 20px;
+    font-family: 'monospace';
+    font-weight: bold;
+    text-align: center;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1); /* 설정 버튼과 동일한 그림자 */
+    transition: all 0.3s ease;
+}
+
+/* 현재 턴인 사람의 시계 강조 - 체스판의 녹색 활용 */
+.clock.active {
+    border: 2px solid #779556; /* 체스판 녹색 */
+    background: #f9fff0;       /* 아주 연한 녹색 배경 */
+    transform: translateY(-2px); /* 살짝 떠오르는 효과 */
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+/* 시간 부족 경고 */
+.clock.low-time {
+    color: #d9534f;
+    border-color: #d9534f;
+}
+
+@keyframes blink {
+    50% { opacity: 0.7; }
+}
+
+/* 기본 테마 변수 (Forest) */
+:root {
+    --dark-color: #779556;
+    --light-color: #ebecd0;
+}
+
+/* 체스판 셀 기본 스타일 */
+.cell.dark { background-color: var(--dark-color); }
+.cell.light { background-color: var(--light-color); }
+
+/* AI 마지막 이동 표시 (노란색 계열) */
+.cell.ai-highlight {
+    background-color: #faca01 !important;
+}
+
+.cell.selected {
+    //background-color: #ffeb3b !important;
+    //opacity: 0.7;
+} 
+////////////.cell 수정 확인////////////////
