@@ -15,10 +15,6 @@ let moveHistory = [];
 let highlightedCells = [];
 let internalBoardState = Array(8).fill().map(() => Array(8).fill(null));
 
-///////////////////
-//let halfMoveClock = 0; // 50수 규칙을 위한 카운터 (기물 잡기나 폰 이동 시 0으로 초기화)
-// let halfMoveClock = 0;을 삭제하고, 모든 로직에서 gameState.halfMoveClock을 사용하도록 수정
-
 let timers = {
     white: 600, // 초 단위
     black: 600,
@@ -34,7 +30,7 @@ let useOpeningBook = true; // 오프닝 북 사용 여부 기본값: 켬
 
 // 탐색 중인 경로의 해시를 저장할 스택
 let searchStackHashes = [];
-////////////////////
+
 let positionHistory = new Map(); // 3회 반복을 기록하기 위한 해시 맵
 
 // [설정] 무승부 수 강조 표시 여부 (true: 켬, false: 끔)
@@ -74,7 +70,6 @@ const pawnPositionValues = [
     [ 0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00]  // 1열
 ];
 
-////////////////////
 const createBoard = () => {
     board.innerHTML = "";
     for (let row = 0; row < 8; row++) {
@@ -94,7 +89,6 @@ const createBoard = () => {
         }
     }
 };
-//////////////////
 
 // 보관소 셀 생성
 const createStorageCells = (storageElement) => {
@@ -654,8 +648,6 @@ const getValidMoves_Raw = (piece, row, col, boardState) => {
      return moves;
  }
 
-
-//////////////
 const isSquareAttacked = (row, col, color, boardState) => {
     const isWhite = color === 'white';
     const oppPawn = isWhite ? 'p' : 'P';
@@ -717,7 +709,6 @@ const isSquareAttacked = (row, col, color, boardState) => {
 
     return false;
 };
-////////////////
 
 // 킹의 위치 찾기
 const findKing = (color, boardState) => {
@@ -740,8 +731,6 @@ const isInCheck = (color, boardState) => {
     return isSquareAttacked(kingRow, kingCol, color, boardState);
 };
 
-
-//////////////
 const isMoveValid = (fromRow, fromCol, toRow, toCol, piece, color, boardState, specialMove = null) => {
     if (!piece) return false;
 
@@ -774,10 +763,7 @@ const isMoveValid = (fromRow, fromCol, toRow, toCol, piece, color, boardState, s
 
     return isValid;
 };
-//////////////
 
-
-/////////////////
 const getLegalMoves = (boardState, color) => {
     const legalMoves = [];
     const isWhite = color === 'white';
@@ -804,7 +790,6 @@ const getLegalMoves = (boardState, color) => {
     }
     return legalMoves;
 };
-/////////////////
 
 const checkIfMoveleadsToDraw = (fromRow, fromCol, toRow, toCol, piece, specialMove) => {
     // 1. 임시 보드 생성 및 이동 시뮬레이션
@@ -1004,21 +989,18 @@ const movePiece = (targetCell, specialMove = null) => {
     const phase = getGamePhase(internalBoardState);
     let currentHash = null;
     let currentMirroredHash = null;
-  //////////
+  
     let game_depth = 1;
-  //////////
 
     if (phase === 'endgame') {
          // 현재 보드 상태와 턴을 기준으로 해시 생성
         currentHash = computeZobristHash(internalBoardState, currentTurn);
         const mirroredBoard = getMirroredBoard(internalBoardState);
         currentMirroredHash = computeZobristHash(mirroredBoard, currentTurn);
-      //////////
         game_depth = endgame_depth;
     }else{
         game_depth = middlegame_depth;
     }
-  ///////////
   
     // --- [무승부 규칙 체크를 위한 초기화 판단] ---
     // 폰이 움직이거나 기물을 잡으면 50수 카운터와 반복 기록을 초기화합니다.
@@ -1083,14 +1065,11 @@ const movePiece = (targetCell, specialMove = null) => {
     // 깊이(depth)를 AI 턴보다 1 정도 낮게 설정해도 충분합니다.
     const isAiMaximizing = (aiColor === 'black');
     
-  
-    ///////////
     let searchScore = 0;
   
     if(phase === 'endgame'){
         searchScore = alphaBeta(internalBoardState, game_depth, -Infinity, Infinity, isAiMaximizing);
     }
-    //////////
   
     // --- Record Move ---
      moveHistory.push({
@@ -1146,7 +1125,6 @@ const isPromotionPending = (cell) => {
      return isWhitePawn || isBlackPawn;
  };
 
-/////////////
 const switchTurn = () => {
     // 턴이 바뀌기 전, 방금 수를 둔 색상을 기억합니다.
     const previousColor = currentTurn;
@@ -1167,7 +1145,6 @@ const switchTurn = () => {
         setTimeout(aiMove, 100);
     }
 };
-///////////////
 
 // 게임 종료 조건 확인 (체크메이트 또는 스테일메이트)
 const isGameOver = (playerColor, boardState, isSimulation = false) => {
@@ -1372,9 +1349,7 @@ const resetGame = () => {
     transpositionTable.clear(); // Clear transposition table
      killerMoves.forEach(level => level.length = 0); // Clear killer moves
      Object.keys(historyTable).forEach(key => delete historyTable[key]); // Clear history table
-  //////////////////////
     resetTimers(); 
-  //////////////////////
 
 
     // 3. Set the starting turn
@@ -1468,7 +1443,7 @@ const evaluateBoard = (boardState) => {
     // 백에 대한 위협 페널티는 백에게 안 좋으므로 전체 점수(흑 기준)에 더한다 (흑의 상대적 이득).
     score += whiteThreatPenalty;
 
-    //////////////////////// --- 3. 엔드게임일 경우, 전용 평가 점수 추가 ---
+    // --- 3. 엔드게임일 경우, 전용 평가 점수 추가 ---
     if (phase === 'endgame') {
         // 흑(AI)의 엔드게임 전략 점수는 더하고, 백의 엔드게임 전략 점수는 뺍니다.
         const blackEndgameBonus = evaluateEndgameBonus(boardState, 'black');
@@ -1479,7 +1454,6 @@ const evaluateBoard = (boardState) => {
         score += evaluateOpeningDevelopment(boardState, 'black');
         score -= evaluateOpeningDevelopment(boardState, 'white');
     }
-  //////////////////////
   
     return score;
 };
@@ -2125,7 +2099,6 @@ const isPiecePinned = (boardState, r, c, color) => {
     return false;
 };
 
-///////////
 const evaluateOpeningDevelopment = (boardState, color) => {
     let devScore = 0;
     const isWhite = color === 'white';
@@ -2180,10 +2153,9 @@ const evaluateOpeningDevelopment = (boardState, color) => {
 
     return devScore;
 };
-///////////
 
 const alphaBeta = (boardState, depth, alpha, beta, maximizingPlayer, ply = 0) => {
-  ////////////////////
+
     const color = maximizingPlayer ? 'black' : 'white';
     const currentHash = computeZobristHash(boardState, color);
   
@@ -2209,7 +2181,6 @@ const alphaBeta = (boardState, depth, alpha, beta, maximizingPlayer, ply = 0) =>
     }
     
     const legalMoves = getLegalMoves(boardState, color);
-  //////////////
 
     // (B) 체크메이트 및 스테일메이트 체크
     if (legalMoves.length === 0) {
@@ -2227,9 +2198,7 @@ const alphaBeta = (boardState, depth, alpha, beta, maximizingPlayer, ply = 0) =>
         return evaluateBoard(boardState);
     }
   
-  ///////////////
     searchStackHashes.push(currentHash);
-  //////////////
 
     // 5. 수 정렬 (성능 최적화의 핵심)
     const sortedMoves = sortMoves(legalMoves, boardState, ply);
@@ -2238,7 +2207,6 @@ const alphaBeta = (boardState, depth, alpha, beta, maximizingPlayer, ply = 0) =>
     let tt_flag = 'upperbound';
 
     for (const move of sortedMoves) {
-      /////////////
         // [수정 포인트 1] 보드 복사 대신 makeMove 호출
         makeMove(boardState, move); 
 
@@ -2247,7 +2215,6 @@ const alphaBeta = (boardState, depth, alpha, beta, maximizingPlayer, ply = 0) =>
 
         // [수정 포인트 3] 계산이 끝난 직후 반드시 unmakeMove 호출 (보드 복구)
         unmakeMove(boardState, move);
-      /////////////
 
         if (maximizingPlayer) {
             if (score > bestScore) {
@@ -2270,12 +2237,10 @@ const alphaBeta = (boardState, depth, alpha, beta, maximizingPlayer, ply = 0) =>
             break;
         }
     }
-  /////////////////////
     searchStackHashes.pop();
 
     // 결과 저장
     transpositionTable.set(currentHash, { depth, score: bestScore, flag: tt_flag });
-  //////////////////////
 
     return bestScore;
 };
@@ -2355,7 +2320,6 @@ const simulateMove = (boardState, move) => {
     return newBoard;
 };
 
-////////////
 // 현재 게임의 권한 상태들
 let gameState = {
     castlingRights: { 
@@ -2466,7 +2430,6 @@ function updateCastlingRights(row, col) {
     if (row === 0 && col === 7) gameState.castlingRights.blackKingside = false;
     if (row === 0 && col === 0) gameState.castlingRights.blackQueenside = false;
 }
-///////////
 
 const aiMove = () => {
     if (gameOver || currentTurn !== aiColor) return;
@@ -2475,7 +2438,6 @@ const aiMove = () => {
     console.log(`AI (${aiColor}) is thinking...`);
     updateStatus(); // AI 생각 중 상태 표시
   
-    /////////////////////////
     // 탐색 시작 전 스택 초기화
     searchStackHashes = []; 
   
@@ -2543,7 +2505,6 @@ const aiMove = () => {
         }
     }
     // --- [오프닝 북 종료] 이후 기존의 Alpha-Beta 탐색 로직 실행 ---
-    /////////////////////////
 
     const legalMoves = getLegalMoves(internalBoardState, aiColor);
 
@@ -2571,7 +2532,7 @@ const aiMove = () => {
     }
 
     // --- [새로운 상수: 탐험 확률] ---
-    const EXPLORATION_RATE = 0.1; // 20% 확률로 새로운 시도를 함
+    const EXPLORATION_RATE = 0.0; // 20% 확률로 새로운 시도를 함
     const isExploring = (phase === 'endgame') && (Math.random() < EXPLORATION_RATE);
     
     if (isExploring) {
@@ -2700,7 +2661,6 @@ const aiMove = () => {
         const originalToBg = toCell.style.backgroundColor;
         const highlightColor = '#faca01'; // AI 이동 하이라이트 색상
       
-      /////////////////
         fromCell.classList.add('ai-highlight'); // 클래스 추가
         toCell.classList.add('ai-highlight');   // 클래스 추가
 
@@ -2715,7 +2675,6 @@ const aiMove = () => {
     if (currentFromCell) currentFromCell.classList.remove('ai-highlight');
     if (currentToCell) currentToCell.classList.remove('ai-highlight');
         }, 1000); // 0.5초 동안 표시
-      ///////////////////
 
     } else {
         console.error(`AI (${aiColor}) could not determine a best move despite having legal moves.`);
@@ -2723,7 +2682,6 @@ const aiMove = () => {
     }
 };
 
-////////////
 const CHESS_OPENING_BOOK = {
     // [백의 첫 수 선택지: e4, d4, Nf3, c4]
     "start": ["6444", "6343", "7655", "6242"],
@@ -2819,7 +2777,6 @@ const CHESS_OPENING_BOOK = {
     "7655,1333": ["6242"], // c4
     "7655,1333,6242": ["1323"], // d6
 };
-///////////
 
 // --- 👑 Self-Learning DB 설정 ---
 const INITIAL_KNOWLEDGE = {
@@ -3084,9 +3041,7 @@ aiMatchBtn.addEventListener('click', () => {
     aiMatchBtn.style.color = 'white';
     pvpMatchBtn.style.backgroundColor = '';
     pvpMatchBtn.style.color = '';
-  /////////////////////
     updateClockVisibility();
-  //////////////////////
     resetGame();
 });
 
@@ -3096,9 +3051,7 @@ pvpMatchBtn.addEventListener('click', () => {
     pvpMatchBtn.style.color = 'white';
     aiMatchBtn.style.backgroundColor = '';
     aiMatchBtn.style.color = '';
-  /////////////////////
     updateClockVisibility();
-  //////////////////////
     resetGame();
 });
 
@@ -3108,7 +3061,6 @@ resetButton.addEventListener('click', resetGame);
 // --- Initial Game Setup ---
 resetGame(); // Start the first game
 
-////////////////////
 // 설정 관련 DOM 요소
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsModal = document.getElementById('settingsModal');
@@ -3361,4 +3313,3 @@ openingBookCheck.onchange = function() {
     useOpeningBook = this.checked;
     console.log(`AI Opening Book Enabled: ${useOpeningBook}`);
 };
-//////////////////let timers, resetgame , switchturn, createBoard수정 확인/////////////
