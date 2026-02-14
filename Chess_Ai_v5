@@ -2941,7 +2941,7 @@ const recordGameResult = (winner) => {
             const aiDelta = (aiColor === 'black') ? (currentScore - prevScore) : (prevScore - currentScore);
             const delta = Math.abs(aiDelta);
 
-            //console.log(`Move ${i} [Search Score]: ${prevScore.toFixed(2)} -> ${currentScore.toFixed(2)} | Delta: ${aiDelta.toFixed(2)}`);
+            console.log(`Move ${i} [Search Score]: ${prevScore.toFixed(2)} -> ${currentScore.toFixed(2)} | Delta: ${aiDelta.toFixed(2)}`);
 
             
             
@@ -2951,15 +2951,15 @@ const recordGameResult = (winner) => {
                 if (move.aiColor === aiColor) {
                     blunderCount++;
                     applyWeightToDB(endgameMoves[i-2], -LEARNING_RATE*delta); // 내 수읽기가 틀렸으므로 이전 수에 강한 페널티
-                    //console.log(`%c   -> Blunder at ${i-2} penalized.`, "color: #ff4d4d;");
+                    console.log(`%c   -> Blunder at ${i-2} penalized.`, "color: #ff4d4d;");
 
                 } else {
                     brilliantCount++;
                     applyWeightToDB(move, LEARNING_RATE*delta); // 상대방이 내 수읽기를 뛰어넘었으므로 상대 수에 강한 가점
-                    //console.log(`%c   -> Brilliant move at ${i} rewarded.`, "color: #1a75ff;");
+                    console.log(`%c   -> Brilliant move at ${i} rewarded.`, "color: #1a75ff;");
                     blunderCount++;
                     applyWeightToDB(endgameMoves[i - 1], -LEARNING_RATE*delta);
-                    //console.log(`%c   -> Blunder at ${i-1} penalized.`, "color: #ff4d4d;");
+                    console.log(`%c   -> Blunder at ${i-1} penalized.`, "color: #ff4d4d;");
                 }
               }
             }
@@ -2968,15 +2968,15 @@ const recordGameResult = (winner) => {
                 if (move.aiColor === aiColor) {
                     blunderCount++;
                     applyWeightToDB(endgameMoves[i-2], -MAX_SINGLE_WEIGHT); // 내 수읽기가 틀렸으므로 이전 수에 강한 페널티
-                    //console.log(`%c   -> Blunder at ${i-2} penalized.`, "color: #ff4d4d;");
+                    console.log(`%c   -> Blunder at ${i-2} penalized.`, "color: #ff4d4d;");
 
                 } else {
                     brilliantCount++;
                     applyWeightToDB(move, MAX_SINGLE_WEIGHT); // 상대방이 내 수읽기를 뛰어넘었으므로 상대 수에 강한 가점
-                    //console.log(`%c   -> Brilliant move at ${i} rewarded.`, "color: #1a75ff;");
+                    console.log(`%c   -> Brilliant move at ${i} rewarded.`, "color: #1a75ff;");
                     blunderCount++;
                     applyWeightToDB(endgameMoves[i - 1], -MAX_SINGLE_WEIGHT);
-                    //console.log(`%c   -> Blunder at ${i-1} penalized.`, "color: #ff4d4d;");
+                    console.log(`%c   -> Blunder at ${i-1} penalized.`, "color: #ff4d4d;");
                 }
               }
           }
