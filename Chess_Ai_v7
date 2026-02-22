@@ -1,0 +1,4373 @@
+//mobility, hanging_w 하한선 설정
+
+let aiColor = 'black'; // AI의 현재 게임 색상 (기본값: 흑)
+let aiPlayedBlackLastGame = true; // AI가 마지막 게임에서 흑을 잡았는지 여부
+
+const board = document.getElementById('chessboard');
+const resetButton = document.getElementById('reset');
+const whiteCapturedStorage = document.getElementById('whiteCapturedPieces');
+const blackCapturedStorage = document.getElementById('blackCapturedPieces');
+const statusDisplay = document.getElementById('status');
+
+let selectedCell = null;
+let selectedStorageCell = null;
+let currentTurn = 'white'; // 항상 백이 먼저 시작
+let gameOver = false;
+let moveHistory = [];
+let highlightedCells = [];
+let internalBoardState = Array(8).fill().map(() => Array(8).fill(null));
+
+let timers = {
+    white: 600, // 초 단위
+    black: 600,
+    interval: null,
+    mode: 'none', // 'none', 'fisher', 'delay'
+    base: 600,
+    increment: 5,
+    currentDelay: 0
+};
+
+// [상단 변수 선언부]
+let useOpeningBook = true; // 오프닝 북 사용 여부 기본값: 켬
+
+// 탐색 중인 경로의 해시를 저장할 스택
+let searchStackHashes = [];
+
+let positionHistory = new Map(); // 3회 반복을 기록하기 위한 해시 맵
+
+// [설정] 무승부 수 강조 표시 여부 (true: 켬, false: 끔)
+let showDrawWarnings = true; 
+let resultRecorded = false; // 추가: 게임 결과가 이미 기록되었는지 확인하는 플래그
+
+let gameMode = 'ai'; // 'ai' 또는 'pvp'
+const aiMatchBtn = document.getElementById('aiMatchBtn');
+const pvpMatchBtn = document.getElementById('pvpMatchBtn');
+
+let middlegame_depth = 3;
+let endgame_depth = 5;
+const ENDGAME_MATERIAL_THRESHOLD = 30;
+
+/////////////////
+// --- 🤖 AI Self-Play Control ---
+let isSelfPlayMode = false;
+let selfPlayDelay = 200; // 대국 속도 (ms)
+
+// [추가] AI가 선택한 수의 정적 평가 데이터를 임시 저장할 전역 변수
+let aiPendingStaticEval = null;
+let aiPendingSearchScore = null;   // [추가] AI가 계산한 최종 점수 보관
+let aiPendingSearchDetails = null; // [추가] AI가 계산한 세부 지표 보관
+
+let isEndgameDBEnabled = false; // Endgame DB(국면 학습) 저장 여부
+let isSelfTuningEnabled = true; // [추가] 가중치 학습 활성화 여부 (기본값: 켬)
+
+// 최상단 변수 선언부
+let kingPos = {
+    white: [7, 4], // 초기 위치 e1
+    black: [0, 4]  // 초기 위치 e8
+};
+
+let currentBoardHash = 0n; // 현재 보드의 실시간 해시값
+
+// 전적 저장용 전역 변수
+let selfPlayResults = {
+    white: 0,
+    black: 0,
+    draw: 0,
+    totalCompleted: 0,
+    targetGames: 0
+};
+///////////////
+
+const pieces = {
+    'P': '♙', 'R': '♖', 'N': '♘', 'B': '♗', 'Q': '♕', 'K': '♔',
+    'p': '♟', 'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚'
+};
+
+const pieceValues = {
+    'P': 1, 'p': 1,
+    'N': 3, 'n': 3,
+    'B': 3, 'b': 3,
+    'R': 5, 'r': 5,
+    'Q': 9, 'q': 9,
+    'K': 0, 'k': 0 // 킹의 점수는 일반적으로 0 또는 매우 높게 설정 (잡히면 게임 끝)
+};
+
+const pawnPositionValues = [
+    [ 0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00], // 8열
+    [ 0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00], // 7열 
+    [ 0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00], // 6열 
+    [ 0.00,  0.05,  0.10,  0.35,  0.35,  0.10,  0.05,  0.00], // 5열 (최대 중앙 통제 점수)
+    [ 0.00,  0.00,  0.15,  0.30,  0.30,  0.15,  0.00,  0.00], // 4열 (안정적인 중앙 점유)
+    [ 0.00,  0.05,  0.05,  0.00,  0.00,  0.05,  0.05,  0.00], // 3열 (소폭 가점)
+    [ 0.00,  0.00,  0.00, -0.20, -0.20,  0.00,  0.00,  0.00], // 2열 (중앙 폰 빠른 전개 유도)
+    [ 0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00,  0.00]  // 1열
+];
+
+const createBoard = () => {
+    board.innerHTML = "";
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const cell = document.createElement('div');
+            cell.classList.add('cell');
+          
+            // 직접 색상을 넣는 대신 클래스만 부여
+            const isDark = (row + col) % 2 !== 0; 
+            cell.classList.add(isDark ? 'dark' : 'light');
+          
+            cell.dataset.row = row;
+            cell.dataset.col = col;
+            cell.addEventListener('click', () => handleCellClick(cell));
+            //cell.style.backgroundColor = (row + col) % 2 === 0 ? '#779556' : '#ebecd0';
+            board.appendChild(cell);
+        }
+    }
+};
+
+// 보관소 셀 생성
+const createStorageCells = (storageElement) => {
+    storageElement.innerHTML = '';
+    for (let i = 0; i < 16; i++) {
+        const cell = document.createElement('div');
+        cell.classList.add('storage-cell');
+        cell.dataset.index = i;
+        cell.addEventListener('click', () => handleStorageCellClick(cell));
+        storageElement.appendChild(cell);
+    }
+};
+
+//기물 생성 (유니코드 문자 사용)
+const createPiece = (char) => {
+    const span = document.createElement('span');
+    span.textContent = pieces[char];
+    span.dataset.piece = char;
+    span.classList.add('piece');
+    span.style.fontSize = '40px'; // 기물 크기
+    span.style.lineHeight = '60px'; // 셀 중앙 정렬
+    return span;
+};
+
+// 초기 기물 배치
+const initPieces = () => {
+    const setup = [
+        ['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'],
+        ['p', 'p', 'p', 'p', 'p', 'p', 'p', 'p'],
+        [], [], [], [],
+        ['P', 'P', 'P', 'P', 'P', 'P', 'P', 'P'],
+        ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R']
+    ];
+
+    const cells = document.querySelectorAll('.cell');
+    cells.forEach(cell => cell.innerHTML = ''); // Clear existing pieces first
+
+    setup.forEach((row, rowIndex) => {
+        row.forEach((piece, colIndex) => {
+            if (piece) {
+                const cellIndex = rowIndex * 8 + colIndex;
+                 if (cellIndex < cells.length) {
+                    cells[cellIndex].appendChild(createPiece(piece));
+                 }
+            }
+        });
+    });
+};
+
+// 보관소 초기화
+const initStorageAreas = () => {
+    createStorageCells(whiteCapturedStorage);
+    createStorageCells(blackCapturedStorage);
+};
+
+// 체스판 상태를 배열로 변환
+const getBoardState = () => {
+    const state = Array(8).fill().map(() => Array(8).fill(null));
+    const cells = document.querySelectorAll('.cell');
+    cells.forEach(cell => {
+        const row = parseInt(cell.dataset.row);
+        const col = parseInt(cell.dataset.col);
+        if (cell.firstChild) {
+            state[row][col] = cell.firstChild.dataset.piece;
+        }
+    });
+    return state;
+};
+
+// 특정 위치의 셀 가져오기
+const getCell = (row, col) => {
+    if (row < 0 || row > 7 || col < 0 || col > 7) return null;
+    return document.querySelector(`.cell[data-row="${row}"][data-col="${col}"]`);
+};
+
+// 특정 위치의 기물 확인
+const getPieceAt = (row, col, boardState = null) => {
+    boardState = boardState || internalBoardState; // Use internal state by default
+    if (row < 0 || row > 7 || col < 0 || col > 7) return null;
+    return boardState[row][col];
+};
+
+
+// 기물별 이동 가능 위치 계산 (캐슬링과 앙파상 수정)
+const getValidMoves = (piece, row, col, boardState = null, skipCastlingCheck = false) => {
+    const moves = [];
+    const isWhite = piece === piece.toUpperCase();
+    boardState = boardState || internalBoardState; // Use internal state if none provided
+
+    switch (piece.toUpperCase()) {
+        case 'P': // 폰
+            const direction = isWhite ? -1 : 1;
+            const startRow = isWhite ? 6 : 1;
+            const promotionRow = isWhite ? 0 : 7;
+
+            // 1칸 전진
+            if (row + direction >= 0 && row + direction <= 7 && getPieceAt(row + direction, col, boardState) === null) {
+                moves.push([row + direction, col]);
+                // 2칸 전진 (시작 위치에서만)
+                if (row === startRow && getPieceAt(row + 2 * direction, col, boardState) === null) {
+                    moves.push([row + 2 * direction, col]);
+                }
+            }
+            // 대각선 공격
+            if (col > 0 && getPieceAt(row + direction, col - 1, boardState) &&
+                (isWhite !== (getPieceAt(row + direction, col - 1, boardState) === getPieceAt(row + direction, col - 1, boardState).toUpperCase()))) {
+                moves.push([row + direction, col - 1]);
+            }
+            if (col < 7 && getPieceAt(row + direction, col + 1, boardState) &&
+                (isWhite !== (getPieceAt(row + direction, col + 1, boardState) === getPieceAt(row + direction, col + 1, boardState).toUpperCase()))) {
+                moves.push([row + direction, col + 1]);
+            }
+            // 앙파상
+            const enPassantRow = isWhite ? 3 : 4;
+            if (row === enPassantRow && moveHistory.length > 0) {
+                const lastMove = moveHistory[moveHistory.length - 1];
+                // lastMove.from/to might be DOM elements or objects depending on history implementation. Ensure we get row/col data.
+                const lastFromRow = parseInt(lastMove.from.dataset?.row ?? lastMove.from.row); // Adapt based on history structure
+                const lastFromCol = parseInt(lastMove.from.dataset?.col ?? lastMove.from.col);
+                const lastToRow = parseInt(lastMove.to.dataset?.row ?? lastMove.to.row);
+                const lastToCol = parseInt(lastMove.to.dataset?.col ?? lastMove.to.col);
+                const lastPiece = lastMove.pieceMoved ?? lastMove.piece ?? (lastMove.to.firstChild ? lastMove.to.firstChild.dataset.piece : null); // Adapt based on history structure
+
+                if (lastPiece && lastPiece.toUpperCase() === 'P' && Math.abs(lastFromRow - lastToRow) === 2 && lastToRow === row && Math.abs(lastToCol - col) === 1) {
+                    moves.push([row + direction, lastToCol, 'enPassant']);
+                }
+            }
+            break;
+
+        case 'R': // 루크
+            for (let dir of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+                let newRow = row, newCol = col;
+                while (true) {
+                    newRow += dir[0];
+                    newCol += dir[1];
+                    if (newRow < 0 || newRow > 7 || newCol < 0 || newCol > 7) break;
+                    const pieceAtPos = getPieceAt(newRow, newCol, boardState);
+                    if (pieceAtPos) {
+                        if (isWhite !== (pieceAtPos === pieceAtPos.toUpperCase())) { // 다른 색 기물
+                            moves.push([newRow, newCol]);
+                        }
+                        break; // 같은 색 또는 다른 색 기물 만나면 멈춤
+                    }
+                    moves.push([newRow, newCol]); // 빈 칸
+                }
+            }
+            break;
+
+        case 'N': // 나이트
+            const knightMoves = [
+                [-2, -1], [-2, 1], [-1, -2], [-1, 2],
+                [1, -2], [1, 2], [2, -1], [2, 1]
+            ];
+            for (let [dr, dc] of knightMoves) {
+                const newRow = row + dr, newCol = col + dc;
+                if (newRow < 0 || newRow > 7 || newCol < 0 || newCol > 7) continue;
+                const pieceAtPos = getPieceAt(newRow, newCol, boardState);
+                if (!pieceAtPos || (isWhite !== (pieceAtPos === pieceAtPos.toUpperCase()))) { // 비어있거나 다른 색 기물
+                    moves.push([newRow, newCol]);
+                }
+            }
+            break;
+
+        case 'B': // 비숍
+             for (let dir of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+                let newRow = row, newCol = col;
+                while (true) {
+                    newRow += dir[0];
+                    newCol += dir[1];
+                    if (newRow < 0 || newRow > 7 || newCol < 0 || newCol > 7) break;
+                    const pieceAtPos = getPieceAt(newRow, newCol, boardState);
+                    if (pieceAtPos) {
+                        if (isWhite !== (pieceAtPos === pieceAtPos.toUpperCase())) {
+                            moves.push([newRow, newCol]);
+                        }
+                        break;
+                    }
+                    moves.push([newRow, newCol]);
+                }
+            }
+            break;
+
+        case 'Q': // 퀸
+            for (let dir of [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+                let newRow = row, newCol = col;
+                while (true) {
+                    newRow += dir[0];
+                    newCol += dir[1];
+                    if (newRow < 0 || newRow > 7 || newCol < 0 || newCol > 7) break;
+                    const pieceAtPos = getPieceAt(newRow, newCol, boardState);
+                    if (pieceAtPos) {
+                        if (isWhite !== (pieceAtPos === pieceAtPos.toUpperCase())) {
+                            moves.push([newRow, newCol]);
+                        }
+                        break;
+                    }
+                    moves.push([newRow, newCol]);
+                }
+            }
+            break;
+
+        case 'K': // 킹
+            const kingMoves = [
+                [-1, -1], [-1, 0], [-1, 1],
+                [0, -1], [0, 1],
+                [1, -1], [1, 0], [1, 1]
+            ];
+            for (let [dr, dc] of kingMoves) {
+                const newRow = row + dr, newCol = col + dc;
+                if (newRow < 0 || newRow > 7 || newCol < 0 || newCol > 7) continue;
+                const pieceAtPos = getPieceAt(newRow, newCol, boardState);
+                 // 이동하려는 칸이 공격받는지 여부는 isMoveValid에서 체크
+                if (!pieceAtPos || (isWhite !== (pieceAtPos === pieceAtPos.toUpperCase()))) {
+                    moves.push([newRow, newCol]);
+                }
+            }
+             // 캐슬링 (재귀 방지 및 isSquareAttacked 사용 단순화)
+            // 캐슬링 (skipCastlingCheck 플래그는 isSquareAttacked 재귀 호출 방지용으로 유지)
+            if (!skipCastlingCheck) {
+                const kingStartRow = isWhite ? 7 : 0;
+                // 조건 0: 킹이 시작 위치에 있어야 함
+                if (row === kingStartRow && col === 4) {
+                    // 조건 1: 현재 체크 상태가 아니어야 함 (가장 먼저 확인!)
+                    if (!isInCheck(isWhite ? 'white' : 'black', boardState)) {
+                        // 킹/룩 이동 여부 체크 (기존 로직 유지)
+                        const kingMoved = moveHistory.some(m => (m.pieceMoved ?? m.piece)?.toUpperCase() === 'K' && m.from.row === kingStartRow && m.from.col === 4);
+
+                        if (!kingMoved) {
+                            // 킹사이드 캐슬링 (h파일 룩)
+                            const rookKingSideCol = 7;
+                            const rookKingSideMoved = moveHistory.some(m => (m.pieceMoved ?? m.piece)?.toUpperCase() === 'R' && m.from.row === kingStartRow && m.from.col === rookKingSideCol);
+                            // 조건: 해당 위치에 룩이 있고, 룩이 움직인 적 없어야 함
+                            if (getPieceAt(kingStartRow, rookKingSideCol, boardState)?.toUpperCase() === 'R' && !rookKingSideMoved) {
+                                // 조건: 경로가 비어있어야 함 (f, g 파일)
+                                if (getPieceAt(kingStartRow, 5, boardState) === null && getPieceAt(kingStartRow, 6, boardState) === null) {
+                                    // 조건: 킹이 통과하는 칸(f파일)과 도착하는 칸(g파일)이 공격받지 않아야 함
+                                    // (시작 칸(e파일)은 이미 위에서 체크 상태 아님을 확인)
+                                    if (!isSquareAttacked(kingStartRow, 5, isWhite ? 'white' : 'black', boardState) &&
+                                        !isSquareAttacked(kingStartRow, 6, isWhite ? 'white' : 'black', boardState)) {
+                                        moves.push([kingStartRow, 6, 'castling']); // 캐슬링 이동 제안
+                                    }
+                                }
+                            }
+
+                            // 퀸사이드 캐슬링 (a파일 룩)
+                            const rookQueenSideCol = 0;
+                            const rookQueenSideMoved = moveHistory.some(m => (m.pieceMoved ?? m.piece)?.toUpperCase() === 'R' && m.from.row === kingStartRow && m.from.col === rookQueenSideCol);
+                            // 조건: 해당 위치에 룩이 있고, 룩이 움직인 적 없어야 함
+                            if (getPieceAt(kingStartRow, rookQueenSideCol, boardState)?.toUpperCase() === 'R' && !rookQueenSideMoved) {
+                                // 조건: 경로가 비어있어야 함 (b, c, d 파일)
+                                if (getPieceAt(kingStartRow, 1, boardState) === null && getPieceAt(kingStartRow, 2, boardState) === null && getPieceAt(kingStartRow, 3, boardState) === null) {
+                                    // 조건: 킹이 통과하는 칸(c, d파일)과 도착하는 칸(c파일)이 공격받지 않아야 함
+                                    // (시작 칸(e파일)은 이미 위에서 체크 상태 아님을 확인)
+                                    if (!isSquareAttacked(kingStartRow, 2, isWhite ? 'white' : 'black', boardState) &&
+                                        !isSquareAttacked(kingStartRow, 3, isWhite ? 'white' : 'black', boardState)) {
+                                        // 참고: 킹이 최종 도착하는 c파일(2열)이 공격받는지는 isSquareAttacked에서 확인됨.
+                                        moves.push([kingStartRow, 2, 'castling']); // 캐슬링 이동 제안
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            break; // 킹 케이스 종료
+    }
+
+    // Filter out moves that leave the king in check
+    const validFilteredMoves = [];
+    for (const move of moves) {
+         const [toRow, toCol] = move;
+         if (isMoveValid(row, col, toRow, toCol, piece, isWhite ? 'white' : 'black', boardState, move[2])) {
+              validFilteredMoves.push(move);
+         }
+     }
+     // console.log(`Piece ${piece} at ${row},${col} has moves:`, moves, `Valid moves:`, validFilteredMoves);
+     return validFilteredMoves; // Return only legally valid moves
+};
+
+// 초기화 시 internalBoardState 설정
+const initInternalBoardState = () => {
+    const setup = [
+        ['r', 'n', 'b', 'q', 'k', 'b', 'n', 'r'],
+        ['p', 'p', 'p', 'p', 'p', 'p', 'p', 'p'],
+        Array(8).fill(null), Array(8).fill(null), Array(8).fill(null), Array(8).fill(null), // Empty rows
+        ['P', 'P', 'P', 'P', 'P', 'P', 'P', 'P'],
+        ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R']
+    ];
+     // Deep copy setup to internalBoardState
+    internalBoardState = JSON.parse(JSON.stringify(setup));
+};
+
+// 이동 시 internalBoardState 업데이트 (캐슬링, 앙파상 포함)
+const updateInternalBoardState = (fromRow, fromCol, toRow, toCol, piece, specialMove = null) => {
+    internalBoardState[toRow][toCol] = piece;
+    internalBoardState[fromRow][fromCol] = null;
+
+    if (specialMove === 'enPassant') {
+        const capturedPawnRow = fromRow; // 앙파상으로 잡힌 폰은 이동한 폰과 같은 행에 있음
+        const capturedPawnCol = toCol;
+        internalBoardState[capturedPawnRow][capturedPawnCol] = null;
+    } else if (specialMove === 'castling') {
+        const rookFromCol = toCol === 6 ? 7 : 0; // 킹사이드면 7, 퀸사이드면 0
+        const rookToCol = toCol === 6 ? 5 : 3;   // 킹사이드면 5, 퀸사이드면 3
+        const rookPiece = internalBoardState[fromRow][rookFromCol];
+        internalBoardState[fromRow][rookToCol] = rookPiece;
+        internalBoardState[fromRow][rookFromCol] = null;
+    }
+     // Check promotion after move for internal state
+     checkPromotionInternal(toRow, toCol, piece, internalBoardState); 
+};
+
+// 내부 상태 폰 승급 처리 (AI용, 자동 퀸 승급)
+const checkPromotionInternal = (row, col, piece, targetBoard) => {
+    if (!piece) return;
+    const isWhite = piece === piece.toUpperCase();
+    const promotionRow = isWhite ? 0 : 7;
+    
+    if (piece.toUpperCase() === 'P' && row === promotionRow) {
+        // 전역 변수가 아닌, 인자로 받은 보드를 수정합니다.
+        targetBoard[row][col] = isWhite ? 'Q' : 'q'; 
+    }
+};
+
+// 승급 상황인지 확인하는 헬퍼 함수
+const isPromotionSituation = (piece, toRow) => {
+    if (!piece) return false;
+    const isWhitePawn = piece === 'P' && toRow === 0;
+    const isBlackPawn = piece === 'p' && toRow === 7;
+    return isWhitePawn || isBlackPawn;
+};
+
+const transpositionTable = new Map();
+
+//////////////
+// [수정] 64비트 결정을 위한 BigInt 난수 생성기
+function seededRandom64(seed) {
+    let state = BigInt(seed);
+    return function() {
+        // SplitMix64 알고리즘 스타일 (BigInt 전용)
+        state += 0x9e3779b97f4a7c15n;
+        let z = state;
+        z = (z ^ (z >> 30n)) * 0xbf58476d1ce4e5b9n;
+        z = (z ^ (z >> 27n)) * 0x94d049bb133111ebn;
+        return z ^ (z >> 31n);
+    };
+}
+
+const MY_SEED = 5082098860154493; // 사용자님의 고정 시드
+const nextRand64 = seededRandom64(MY_SEED);
+
+// 모든 키를 BigInt로 생성
+const zobristKeys = Array(8).fill().map(() =>
+    Array(8).fill().map(() =>
+        Array(12).fill().map(() => nextRand64())
+    )
+);
+
+const turnKey = nextRand64();
+const castleKeys = Array(4).fill().map(() => nextRand64());
+const enPassantKeys = Array(8).fill().map(() => nextRand64());
+//////////////
+
+const pieceToIndex = (piece) => {
+    const piecesList = ['P', 'R', 'N', 'B', 'Q', 'K', 'p', 'r', 'n', 'b', 'q', 'k'];
+    return piecesList.indexOf(piece);
+};
+
+const killerMoves = Array(10).fill().map(() => []); // 최대 깊이 10
+const historyTable = {}; // [piece][to_sq] -> score
+
+// 이동 우선순위 계산 (간단화된 버전)
+const getMovePriority = (move, boardState, depth) => {
+    let priority = 0;
+    const targetPiece = boardState[move.to[0]][move.to[1]];
+
+    // MVV-LVA (Most Valuable Victim - Least Valuable Aggressor)
+    if (targetPiece) {
+        priority += 10 * pieceValues[targetPiece] - pieceValues[move.piece];
+    }
+
+    // Killer Moves
+    if (killerMoves[depth]?.some(m => m.from[0] === move.from[0] && m.from[1] === move.from[1] && m.to[0] === move.to[0] && m.to[1] === move.to[1])) {
+        priority += 50;
+    }
+
+    // History Heuristic (simple version)
+    const historyKey = `${move.piece}_${move.to[0]}_${move.to[1]}`;
+     priority += historyTable[historyKey] || 0;
+
+     // Promotion boost
+     if (move.piece.toUpperCase() === 'P') {
+         const promotionRow = (move.piece === 'P') ? 0 : 7;
+         if (move.to[0] === promotionRow) {
+             priority += pieceValues['Q'] * 10; // Prioritize promotion to queen
+         }
+     }
+  /////////////
+    if (move.to[2] === 'castling') {
+    priority += 150; // 캐슬링 이동을 최우선 순위 중 하나로 설정
+}
+  ////////////
+    return priority;
+};
+
+// 이동 정렬
+const sortMoves = (moves, boardState, depth) => {
+    // Calculate priorities first
+    const movesWithPriority = moves.map(move => ({
+        move,
+        priority: getMovePriority(move, boardState, depth)
+    }));
+
+    // Sort in descending order of priority
+    movesWithPriority.sort((a, b) => b.priority - a.priority);
+
+    // Return just the moves in sorted order
+    return movesWithPriority.map(item => item.move);
+};
+
+// 가능한 모든 이동 생성 (특정 색상)
+const getPossibleMoves = (boardState, color) => {
+    const moves = [];
+    const isWhiteTurn = color === 'white';
+    const kingStartRow = isWhiteTurn ? 7 : 0;
+
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const piece = boardState[row][col];
+            if (piece && ((isWhiteTurn && piece === piece.toUpperCase()) ||
+                          (!isWhiteTurn && piece === piece.toLowerCase()))) {
+                
+                const potentialMoves = getValidMoves_Raw(piece, row, col, boardState);
+                potentialMoves.forEach(move => {
+                    moves.push({ from: [row, col], to: move, piece: piece });
+                });
+
+                // --- [여기서 캐슬링 수동 추가] ---
+                if (piece.toUpperCase() === 'K' && row === kingStartRow && col === 4) {
+                    // 기본 경로 점검 (기물 존재 여부만)
+                    if (getPieceAt(row, 5, boardState) === null && getPieceAt(row, 6, boardState) === null && getPieceAt(row, 7, boardState)?.toUpperCase() === 'R') {
+                        moves.push({ from: [row, 4], to: [row, 6, 'castling'], piece: piece });
+                    }
+                    if (getPieceAt(row, 1, boardState) === null && getPieceAt(row, 2, boardState) === null && getPieceAt(row, 3, boardState) === null && getPieceAt(row, 0, boardState)?.toUpperCase() === 'R') {
+                        moves.push({ from: [row, 4], to: [row, 2, 'castling'], piece: piece });
+                    }
+                }
+            }
+        }
+    }
+    return moves;
+};
+
+
+// Raw move generation without check validation (for isSquareAttacked)
+const getValidMoves_Raw = (piece, row, col, boardState) => {
+     const moves = [];
+    const isWhite = piece === piece.toUpperCase();
+
+     switch (piece.toUpperCase()) {
+         case 'P':
+             const direction = isWhite ? -1 : 1;
+             const startRow = isWhite ? 6 : 1;
+              // 1칸 전진 (보드 범위 체크 필수)
+              if (row + direction >= 0 && row + direction < 8 && getPieceAt(row + direction, col, boardState) === null) {
+                 moves.push([row + direction, col]);
+                 // 2칸 전진
+                 if (row === startRow && getPieceAt(row + 2 * direction, col, boardState) === null) {
+                     moves.push([row + 2 * direction, col]);
+                 }
+             }
+              // 대각선 공격 (보드 범위 체크 필수)
+              if (col > 0 && row + direction >=0 && row+direction < 8) {
+                  const targetPiece = getPieceAt(row + direction, col - 1, boardState);
+                  if(targetPiece && (isWhite !== (targetPiece === targetPiece.toUpperCase()))) {
+                      moves.push([row + direction, col - 1]);
+                  }
+              }
+               if (col < 7 && row + direction >=0 && row+direction < 8) {
+                    const targetPiece = getPieceAt(row + direction, col + 1, boardState);
+                   if(targetPiece && (isWhite !== (targetPiece === targetPiece.toUpperCase()))) {
+                       moves.push([row + direction, col + 1]);
+                   }
+               }
+                // 앙파상 (로직은 getValidMoves와 동일하게 유지 가능)
+                 const enPassantRow = isWhite ? 3 : 4;
+                 if (row === enPassantRow && moveHistory.length > 0) {
+                     const lastMove = moveHistory[moveHistory.length - 1];
+                     const lastFromRow = parseInt(lastMove.from.dataset?.row ?? lastMove.from.row);
+                     const lastFromCol = parseInt(lastMove.from.dataset?.col ?? lastMove.from.col);
+                     const lastToRow = parseInt(lastMove.to.dataset?.row ?? lastMove.to.row);
+                     const lastToCol = parseInt(lastMove.to.dataset?.col ?? lastMove.to.col);
+                     const lastPiece = lastMove.pieceMoved ?? lastMove.piece ?? (lastMove.to.firstChild ? lastMove.to.firstChild.dataset.piece : null);
+
+                      if (lastPiece && lastPiece.toUpperCase() === 'P' && Math.abs(lastFromRow - lastToRow) === 2 && lastToRow === row && Math.abs(lastToCol - col) === 1) {
+                         // Check if landing square is valid
+                          if (row + direction >= 0 && row + direction < 8 && lastToCol >= 0 && lastToCol < 8) {
+                             moves.push([row + direction, lastToCol, 'enPassant']);
+                         }
+                     }
+                 }
+             break;
+          case 'R':
+             for (let dir of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+                 let newRow = row, newCol = col;
+                 while (true) {
+                     newRow += dir[0];
+                     newCol += dir[1];
+                     if (newRow < 0 || newRow > 7 || newCol < 0 || newCol > 7) break;
+                     const pieceAtPos = getPieceAt(newRow, newCol, boardState);
+                     if (pieceAtPos) {
+                         if (isWhite !== (pieceAtPos === pieceAtPos.toUpperCase())) { moves.push([newRow, newCol]); }
+                         break;
+                     }
+                     moves.push([newRow, newCol]);
+                 }
+             }
+             break;
+         case 'N':
+             const knightMoves = [ [-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1] ];
+             for (let [dr, dc] of knightMoves) {
+                 const newRow = row + dr, newCol = col + dc;
+                 if (newRow < 0 || newRow > 7 || newCol < 0 || newCol > 7) continue;
+                 const pieceAtPos = getPieceAt(newRow, newCol, boardState);
+                 if (!pieceAtPos || (isWhite !== (pieceAtPos === pieceAtPos.toUpperCase()))) { moves.push([newRow, newCol]); }
+             }
+             break;
+         case 'B':
+              for (let dir of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+                 let newRow = row, newCol = col;
+                 while (true) {
+                     newRow += dir[0];
+                     newCol += dir[1];
+                     if (newRow < 0 || newRow > 7 || newCol < 0 || newCol > 7) break;
+                     const pieceAtPos = getPieceAt(newRow, newCol, boardState);
+                     if (pieceAtPos) {
+                         if (isWhite !== (pieceAtPos === pieceAtPos.toUpperCase())) { moves.push([newRow, newCol]); }
+                         break;
+                     }
+                     moves.push([newRow, newCol]);
+                 }
+             }
+             break;
+         case 'Q':
+             for (let dir of [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+                 let newRow = row, newCol = col;
+                 while (true) {
+                     newRow += dir[0];
+                     newCol += dir[1];
+                     if (newRow < 0 || newRow > 7 || newCol < 0 || newCol > 7) break;
+                     const pieceAtPos = getPieceAt(newRow, newCol, boardState);
+                     if (pieceAtPos) {
+                         if (isWhite !== (pieceAtPos === pieceAtPos.toUpperCase())) { moves.push([newRow, newCol]); }
+                         break;
+                     }
+                     moves.push([newRow, newCol]);
+                 }
+             }
+             break;
+         case 'K':
+             const kingMoves = [ [-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1] ];
+             for (let [dr, dc] of kingMoves) {
+                 const newRow = row + dr, newCol = col + dc;
+                 if (newRow < 0 || newRow > 7 || newCol < 0 || newCol > 7) continue;
+                 const pieceAtPos = getPieceAt(newRow, newCol, boardState);
+                 if (!pieceAtPos || (isWhite !== (pieceAtPos === pieceAtPos.toUpperCase()))) { moves.push([newRow, newCol]); }
+             }
+             break;
+     }
+     return moves;
+ }
+
+const isSquareAttacked = (row, col, color, boardState) => {
+    const isWhite = color === 'white';
+    const oppPawn = isWhite ? 'p' : 'P';
+    const oppKnight = isWhite ? 'n' : 'N';
+    const oppBishop = isWhite ? 'b' : 'B';
+    const oppRook = isWhite ? 'r' : 'R';
+    const oppQueen = isWhite ? 'q' : 'Q';
+    const oppKing = isWhite ? 'k' : 'K';
+
+    // 1. 나이트 공격 확인 (L자)
+    const knightMoves = [[-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1]];
+    for (const [dr, dc] of knightMoves) {
+        const r = row + dr, c = col + dc;
+        if (r >= 0 && r < 8 && c >= 0 && c < 8 && boardState[r][c] === oppKnight) return true;
+    }
+
+    // 2. 직선 공격 (루크, 퀸)
+    const rookDirs = [[0, 1], [0, -1], [1, 0], [-1, 0]];
+    for (const [dr, dc] of rookDirs) {
+        let r = row + dr, c = col + dc;
+        while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+            const piece = boardState[r][c];
+            if (piece) {
+                if (piece === oppRook || piece === oppQueen) return true;
+                break; // 다른 기물이 가로막음
+            }
+            r += dr; c += dc;
+        }
+    }
+
+    // 3. 대각선 공격 (비숍, 퀸, 폰)
+    const bishopDirs = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+    for (const [dr, dc] of bishopDirs) {
+        let r = row + dr, c = col + dc;
+        // 폰 공격은 딱 한 칸 거리에만 존재함
+        const pawnDir = isWhite ? -1 : 1; 
+        if (r === row + pawnDir && (c === col - 1 || c === col + 1)) {
+            if (boardState[r]?.[c] === oppPawn) return true;
+        }
+
+        while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+            const piece = boardState[r][c];
+            if (piece) {
+                if (piece === oppBishop || piece === oppQueen) return true;
+                break;
+            }
+            r += dr; c += dc;
+        }
+    }
+
+    // 4. 상대 킹 근접 확인
+    for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+            if (dr === 0 && dc === 0) continue;
+            const r = row + dr, c = col + dc;
+            if (r >= 0 && r < 8 && c >= 0 && c < 8 && boardState[r][c] === oppKing) return true;
+        }
+    }
+
+    return false;
+};
+
+// 킹의 위치 찾기
+const findKing = (color, boardState) => {
+    const kingPiece = color === 'white' ? 'K' : 'k';
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            if (boardState[row][col] === kingPiece) {
+                return [row, col];
+            }
+        }
+    }
+    return null; // Should not happen in a normal game
+};
+
+// 체크 상태 확인
+///////////////
+// 최적화된 isInCheck: 전역 kingPos를 직접 참조하여 O(1) 달성
+const isInCheck = (color, boardState, optionalKingPos = null) => {
+    // 1. 인자로 넘어온 좌표가 있다면 그것을 쓰고, 없으면 전역 변수에서 가져옴
+    const pos = optionalKingPos || (color === 'white' ? kingPos.white : kingPos.black);
+    
+    // 2. 킹이 없는 예외 상황 처리 (초기화 등)
+    if (!pos) return false; 
+    
+    // 3. 즉시 공격 여부 확인 (O(1) 검색)
+    return isSquareAttacked(pos[0], pos[1], color, boardState);
+};
+///////////////
+
+const isMoveValid = (fromRow, fromCol, toRow, toCol, piece, color, boardState, specialMove = null) => {
+    if (!piece) return false;
+
+    // --- [1] Make Move (임시 이동) ---
+    const originalTargetPiece = boardState[toRow][toCol];
+    let originalEnPassantPiece = null;
+
+    boardState[toRow][toCol] = piece;
+    boardState[fromRow][fromCol] = null;
+
+    if (specialMove === 'enPassant') {
+        originalEnPassantPiece = boardState[fromRow][toCol];
+        boardState[fromRow][toCol] = null;
+    } else if (specialMove === 'castling') {
+        // 캐슬링은 이미 getValidMoves에서 경로 체크를 하므로, 
+        // 여기선 킹이 최종 위치에서 안전한지만 봐도 무방합니다. (룩 이동은 생략 가능)
+    }
+  
+  /////////////////
+    // 움직이는 기물이 킹이면 목적지(toRow, toCol)가 새로운 좌표, 아니면 기존 전역 좌표 유지
+    const simulatedKingPos = (piece.toUpperCase() === 'K') 
+        ? [toRow, toCol] 
+        : (color === 'white' ? kingPos.white : kingPos.black);
+
+    // 최적화된 isInCheck에 시뮬레이션된 좌표를 직접 찔러넣어 루프 방지
+    const isValid = !isInCheck(color, boardState, simulatedKingPos);
+  ////////////////
+
+    // --- [3] Unmake Move (복구) ---
+    boardState[fromRow][fromCol] = piece;
+    boardState[toRow][toCol] = originalTargetPiece;
+
+    if (specialMove === 'enPassant') {
+        boardState[fromRow][toCol] = originalEnPassantPiece;
+    }
+
+    return isValid;
+};
+
+const getLegalMoves = (boardState, color) => {
+    const legalMoves = [];
+    const isWhite = color === 'white';
+
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const piece = boardState[row][col];
+            if (!piece || (isWhite ? piece !== piece.toUpperCase() : piece !== piece.toLowerCase())) continue;
+
+            // Raw Move(기본 이동 법칙) 생성
+            const rawMoves = getValidMoves_Raw(piece, row, col, boardState);
+            
+            for (const move of rawMoves) {
+                // move는 [toRow, toCol, special] 형태
+                if (isMoveValid(row, col, move[0], move[1], piece, color, boardState, move[2])) {
+                    legalMoves.push({
+                        from: [row, col],
+                        to: move,
+                        piece: piece
+                    });
+                }
+            }
+        }
+    }
+    return legalMoves;
+};
+
+const checkIfMoveleadsToDraw = (fromRow, fromCol, toRow, toCol, piece, specialMove) => {
+    // 1. 임시 보드 생성 및 이동 시뮬레이션
+    const tempBoard = internalBoardState.map(row => [...row]);
+    
+    // 이동 실행 (시뮬레이션)
+    tempBoard[toRow][toCol] = piece;
+    tempBoard[fromRow][fromCol] = null;
+    if (specialMove === 'enPassant') tempBoard[fromRow][toCol] = null;
+    if (specialMove === 'castling') {
+        const rCol = toCol === 6 ? 7 : 0;
+        const rToCol = toCol === 6 ? 5 : 3;
+        tempBoard[fromRow][rToCol] = tempBoard[fromRow][rCol];
+        tempBoard[fromRow][rCol] = null;
+    }
+    checkPromotionInternal(toRow, toCol, piece, tempBoard);
+
+    // 2. 무승부 조건 검사
+    
+    // (A) 50수 규칙 체크
+    const isPawnMove = piece.toUpperCase() === 'P';
+    const isCapture = internalBoardState[toRow][toCol] !== null || specialMove === 'enPassant';
+    if (gameState.halfMoveClock >= 99 && !isPawnMove && !isCapture) return true;
+
+    // (B) 3회 반복 체크 (Zobrist Hash)
+    const nextTurn = currentTurn === 'white' ? 'black' : 'white';
+    const nextHash = computeZobristHash(tempBoard, nextTurn);
+    if ((positionHistory.get(nextHash) || 0) >= 2) return true;
+
+    // (C) 스테일메이트 체크
+    // 내 이동 후에 상대방이 둘 수 있는 합법수가 없는지 확인
+    const nextLegalMoves = getLegalMoves(tempBoard, nextTurn);
+    if (nextLegalMoves.length === 0 && !isInCheck(nextTurn, tempBoard)) return true;
+
+    return false;
+};
+
+const highlightValidMoves = (piece, row, col) => {
+    clearHighlightedMoves();
+    const boardState = internalBoardState;
+    const moves = getValidMoves(piece, row, col, boardState);
+
+    moves.forEach(([r, c, special]) => {
+        const cell = getCell(r, c);
+        if (cell) {
+            // 기본 하이라이트 클래스
+            cell.classList.add('highlight');
+            
+            // [추가] 무승부 경고 기능이 켜져 있다면 체크
+            if (showDrawWarnings) {
+                const isDrawMove = checkIfMoveleadsToDraw(row, col, r, c, piece, special);
+                if (isDrawMove) {
+                    cell.classList.add('highlight-draw'); // 주황색 등으로 표시
+                }
+            }
+            
+            highlightedCells.push(cell);
+        }
+    });
+};
+
+
+const clearHighlightedMoves = () => {
+    highlightedCells.forEach(cell => {
+        cell.classList.remove('highlight');
+        cell.classList.remove('highlight-draw');
+    });
+    highlightedCells = [];
+};
+
+
+const handleCellClick = (cell) => {
+    if (gameOver || currentTurn === aiColor) return; // 플레이어 턴이 아니면 무시
+  
+    if (gameMode === 'ai' && currentTurn === aiColor) return;
+
+    if (selectedStorageCell) {
+         clearStorageSelection();
+        return;
+    }
+
+    const targetPieceElement = cell.firstChild;
+    const targetPiece = targetPieceElement ? targetPieceElement.dataset.piece : null;
+    const row = parseInt(cell.dataset.row);
+    const col = parseInt(cell.dataset.col);
+
+    if (selectedCell) {
+        const fromRow = parseInt(selectedCell.dataset.row);
+        const fromCol = parseInt(selectedCell.dataset.col);
+        const pieceElement = selectedCell.firstChild;
+        const piece = pieceElement ? pieceElement.dataset.piece : null;
+
+        if (!piece) {
+            console.error('handleCellClick: No piece in selectedCell');
+            clearSelection();
+            clearHighlightedMoves();
+            return;
+        }
+
+        const color = piece === piece.toUpperCase() ? 'white' : 'black';
+        if (color !== currentTurn) {
+             clearSelection();
+             clearHighlightedMoves();
+             return;
+         }
+
+        // Find the target move among highlighted (legal) moves
+        const targetMove = highlightedCells.find(highlightedCell =>
+            parseInt(highlightedCell.dataset.row) === row && parseInt(highlightedCell.dataset.col) === col
+        );
+
+
+         if (targetMove) { // targetMove is the cell div itself
+            const allValidMoves = getValidMoves(piece, fromRow, fromCol, internalBoardState);
+            const specificMove = allValidMoves.find(([r, c, _]) => r === row && c === col);
+
+             if (specificMove) {
+                 movePiece(cell, specificMove[2]); // Pass the special flag ('enPassant' or 'castling')
+             } else {
+                  console.warn("Clicked highlighted cell is not a valid move on re-check.");
+                  clearSelection();
+                  clearHighlightedMoves();
+             }
+
+        } else if (cell === selectedCell) {
+            // Clicked the same selected cell again - deselect
+            clearSelection();
+            clearHighlightedMoves();
+        } else {
+             // Clicked an invalid square or own piece
+             const clickedPiece = getPieceAt(row, col, internalBoardState);
+             if (clickedPiece && (clickedPiece === clickedPiece.toUpperCase()) === (piece === piece.toUpperCase())) {
+                 // Clicked another piece of the same color - switch selection
+                 clearSelection();
+                 clearHighlightedMoves();
+                 selectPiece(cell);
+                 highlightValidMoves(clickedPiece, row, col);
+             } else {
+                 // Clicked an empty invalid square or opponent piece without it being a valid move
+                 clearSelection();
+                 clearHighlightedMoves();
+             }
+         }
+
+    } else if (targetPiece) {
+         const pieceColor = targetPiece === targetPiece.toUpperCase() ? 'white' : 'black';
+         // Select piece only if it's the current player's turn and the piece matches the turn color
+         if (pieceColor === currentTurn) {
+            selectPiece(cell);
+            highlightValidMoves(targetPiece, row, col);
+        }
+    }
+};
+
+// 클릭 핸들러 (보관소 셀 - Not used in standard chess, keep minimal)
+const handleStorageCellClick = (cell) => {
+    if (gameOver) return;
+     console.log("Storage click - not implemented for standard chess rules.");
+     clearStorageSelection(); 
+};
+
+// 기물 선택 (체스판)
+const selectPiece = (cell) => {
+    selectedCell?.classList.remove('selected'); // Deselect previous
+    selectedCell = cell;
+    cell.classList.add('selected');
+};
+
+// 기물 선택 (보관소)
+const selectStorageCell = (cell) => {
+     selectedStorageCell?.classList.remove('selected');
+    selectedStorageCell = cell;
+    cell.classList.add('selected');
+};
+
+
+// 기물 이동 (DOM 업데이트 및 내부 상태 업데이트 호출)
+const movePiece = (targetCell, specialMove = null) => {
+    if (!selectedCell || selectedCell === targetCell || !selectedCell.firstChild) {
+        clearSelection();
+        clearHighlightedMoves();
+        return;
+    }
+
+    const fromRow = parseInt(selectedCell.dataset.row);
+    const fromCol = parseInt(selectedCell.dataset.col);
+    const toRow = parseInt(targetCell.dataset.row);
+    const toCol = parseInt(targetCell.dataset.col);
+
+    const pieceElement = selectedCell.firstChild;
+    const piece = pieceElement.dataset.piece;
+    let capturedPieceElement = targetCell.firstChild;
+    let capturedPiece = capturedPieceElement ? capturedPieceElement.dataset.piece : null;
+    let capturedOnSquare = [toRow, toCol]; // Default capture square
+  
+    // 이동 전의 보드 상태를 기준으로 원본 해시와 반전 해시를 모두 생성
+    const phase = getGamePhase(internalBoardState);
+    let currentHash = null;
+    let currentMirroredHash = null;
+  
+    let game_depth = 1;
+
+    if (phase === 'endgame') {
+         // 현재 보드 상태와 턴을 기준으로 해시 생성
+        currentHash = computeZobristHash(internalBoardState, currentTurn);
+        const mirroredBoard = getMirroredBoard(internalBoardState);
+        currentMirroredHash = computeZobristHash(mirroredBoard, currentTurn);
+        game_depth = endgame_depth;
+    }else{
+        game_depth = middlegame_depth;
+    }
+  
+    // --- [무승부 규칙 체크를 위한 초기화 판단] ---
+    // 폰이 움직이거나 기물을 잡으면 50수 카운터와 반복 기록을 초기화합니다.
+  /////삭제///////////////////////
+    // if (piece.toUpperCase() === 'P' || capturedPiece || specialMove === 'enPassant') {
+    //     gameState.halfMoveClock = 0;
+    //     positionHistory.clear(); // 기물 구성이 바뀌면 이전과 똑같은 판이 나올 수 없으므로 비움
+    // } else {
+    //     gameState.halfMoveClock++; // 그 외의 경우 카운트 증가
+    // }
+  //////////////////////////////////
+  
+     // --- Capture Logic ---
+     if (specialMove === 'enPassant') {
+         const capturedPawnRow = fromRow; // En passant captures pawn on the 'from' row
+         const capturedPawnCol = toCol;
+         const capturedPawnCell = getCell(capturedPawnRow, capturedPawnCol);
+         if (capturedPawnCell && capturedPawnCell.firstChild) {
+             capturedPieceElement = capturedPawnCell.firstChild;
+             capturedPiece = capturedPieceElement.dataset.piece;
+             capturedOnSquare = [capturedPawnRow, capturedPawnCol]; // Update where capture happened
+              // Add captured piece to storage
+             addPieceToStorage(capturedPieceElement);
+             capturedPawnCell.innerHTML = ''; // Remove from board visually
+         } else {
+             console.error("En passant error: Cannot find pawn to capture.");
+             // Potentially revert or handle error state
+         }
+     } else if (capturedPieceElement) {
+         // Normal capture
+         addPieceToStorage(capturedPieceElement);
+         targetCell.innerHTML = ''; // Clear target cell before moving piece
+     }
+  
+     
+
+     // --- Handle Castling Rook Move Visually ---
+     if (specialMove === 'castling') {
+         const rookFromCol = toCol === 6 ? 7 : 0;
+         const rookToCol = toCol === 6 ? 5 : 3;
+         const rookCell = getCell(fromRow, rookFromCol);
+         const rookTargetCell = getCell(toRow, rookToCol);
+         if (rookCell && rookCell.firstChild && rookTargetCell) {
+             rookTargetCell.appendChild(rookCell.firstChild);
+         } else {
+              console.error("Castling error: Cannot move rook visually.");
+              // Potentially revert or handle error state
+          }
+     }
+  
+    // --- Move Piece Logic ---
+    targetCell.appendChild(pieceElement); // Move piece visually
+    // 1. 내부 상태를 먼저 업데이트 (기물을 실제로 옮김)
+    //updateInternalBoardState(fromRow, fromCol, toRow, toCol, piece, specialMove);
+  
+    // [변경] 수동 업데이트 대신 makeMove 시스템 활용
+    const moveObj = {
+        from: [fromRow, fromCol],
+        to: [toRow, toCol, specialMove],
+        piece: piece
+    };
+    
+    makeMove(internalBoardState, moveObj); // 내부 배열 및 모든 상태(gameState)를 한꺼번에 업데이트
+
+    // 2. [수정] 업데이트된 상태(이동 후)를 기준으로 해시 계산
+    const nextTurnColor = currentTurn === 'white' ? 'black' : 'white';
+    const postHash = computeZobristHash(internalBoardState, nextTurnColor);
+
+    ///////////////////////////// 3. 3회 반복 기록에 추가
+    // 폰 이동이나 기물 포획 시 positionHistory를 초기화하는 로직
+    // makeMove 이후 gameState.halfMoveClock이 0이 되었다면 중요한 변화(폰/포획)가 있었다는 뜻입니다.
+    if (gameState.halfMoveClock === 0) {
+        positionHistory.clear();
+    }
+    positionHistory.set(postHash, (positionHistory.get(postHash) || 0) + 1);
+  
+    let currentStaticScore, currentStaticDetails;
+    let currentSearchScore, currentSearchDetails;
+
+    // AI의 턴이고, 미리 계산된 데이터가 있는 경우
+    if (currentTurn === aiColor && aiPendingStaticEval) {
+        currentStaticScore = aiPendingStaticEval.score;
+        currentStaticDetails = aiPendingStaticEval.details;
+        currentSearchScore = aiPendingSearchScore;     // 전역 변수에서 가져옴
+        currentSearchDetails = aiPendingSearchDetails; // 전역 변수에서 가져옴
+        
+        // 데이터 사용 후 초기화
+        aiPendingStaticEval = null;
+        aiPendingSearchScore = null;
+        aiPendingSearchDetails = null;
+    } else if (gameMode === 'ai') { // [수정] AI 모드일 때만 플레이어 수 분석 수행
+    const [sScore, sDetails] = evaluateBoard(internalBoardState);
+    currentStaticScore = sScore;
+    currentStaticDetails = sDetails;
+
+    const isAiMaximizing = (aiColor === 'black');
+    const playerSearchDepth = Math.max(1, game_depth - 1);
+    const [searchScore, searchDetails] = alphaBeta(internalBoardState, playerSearchDepth, -Infinity, Infinity, !isAiMaximizing, 0, false, playerSearchDepth);
+    currentSearchScore = searchScore;
+    currentSearchDetails = searchDetails;
+} else {
+    // [추가] PvP 모드일 때는 무거운 탐색을 생략하고 최소한의 정보만 저장
+    currentStaticScore = 0;
+    currentStaticDetails = null;
+    currentSearchScore = 0;
+    currentSearchDetails = null;
+}
+  //////////////////////////////
+  
+    // --- Record Move ---
+     moveHistory.push({
+         from: { row: fromRow, col: fromCol },
+         to: { row: toRow, col: toCol },
+         pieceMoved: piece,
+         capturedPiece: capturedPiece, // Can be null
+         specialMove: specialMove, // Can be null, 'enPassant', 'castling'
+         phaseAtMove: phase,
+        boardHash: currentHash,
+        mirroredHash: currentMirroredHash,
+       ////////////////////////////////////
+        evalScore:  currentSearchScore, // 플레이어의 수를 AI의 수읽기로 평가한 점수
+        searchDetails: currentSearchDetails,
+        staticScore: currentStaticScore, // Static Score (Student)
+        staticDetails: currentStaticDetails, // Features (For Tuning)
+        aiColor: currentTurn,
+        searchDepth: game_depth
+       ////////////////////////////////////
+     });
+
+    clearSelection();
+    clearHighlightedMoves();
+
+    // 승급 상황인지 확인
+    if (isPromotionSituation(piece, toRow)) {
+        // 승급 처리 (checkPromotion 내부에서 승급 완료 후 switchTurn을 호출함)
+        checkPromotion(targetCell); 
+    } else {
+        // 승급이 아니면 즉시 턴 교체
+        switchTurn();
+    }
+};
+
+// Helper to add captured piece to the correct storage
+const addPieceToStorage = (pieceElement) => {
+    if (!pieceElement) return;
+    const piece = pieceElement.dataset.piece;
+    const isWhite = piece === piece.toUpperCase();
+    const storage = isWhite ? whiteCapturedStorage : blackCapturedStorage;
+    const emptyStorageCell = Array.from(storage.querySelectorAll('.storage-cell')).find(cell => !cell.firstChild);
+    if (emptyStorageCell) {
+        emptyStorageCell.appendChild(pieceElement); // Move the element
+    } else {
+        console.warn("No empty storage cell found for captured piece:", piece);
+        // Piece is effectively removed from the game if storage is full
+    }
+};
+
+
+// Check if promotion is happening (for turn switching logic)
+const isPromotionPending = (cell) => {
+     const pieceElement = cell.firstChild;
+     if (!pieceElement) return false;
+     const piece = pieceElement.dataset.piece;
+     const row = parseInt(cell.dataset.row);
+     const isWhitePawn = piece === 'P' && row === 0;
+     const isBlackPawn = piece === 'p' && row === 7;
+     return isWhitePawn || isBlackPawn;
+ };
+
+const switchTurn = () => {
+    // 턴이 바뀌기 전, 방금 수를 둔 색상을 기억합니다.
+    const previousColor = currentTurn;
+
+    // 턴 교체 (기존 로직)
+    currentTurn = currentTurn === 'white' ? 'black' : 'white';
+    
+    // --- [추가된 타이머 연동 부분] ---
+    if (gameMode === 'pvp') {
+        handleTimerOnTurnSwitch(previousColor);
+    }
+    
+    updateStatus(); 
+
+  /////////////////////////////
+    // --- 게임 종료 시 처리 ---
+    if (gameOver) {
+        if (isSelfPlayMode) {
+            remainingSelfPlayGames--; // 한 판 완료
+            console.log(`[Self-Play] 대국 종료. 남은 대국: ${remainingSelfPlayGames}판`);
+
+            if (remainingSelfPlayGames > 0) {
+                // 아직 남은 판수가 있다면 3초 후 다음 대국 시작
+                setTimeout(() => {
+                    if (isSelfPlayMode) resetGame();
+                }, 3000);
+            } else {
+                // 모든 판 완료
+                stopSelfPlay();
+                console.log("%c[Self-Play] 모든 목표 대국을 완료했습니다.", "color: #2196F3; font-weight: bold;");
+            }
+        }
+        return;
+    }
+
+    // --- [수정] 자가 대국 모드일 때의 동작 ---
+    if (isSelfPlayMode) {
+        triggerNextSelfMove();
+    } else if (gameMode === 'ai' && currentTurn === aiColor) {
+        setTimeout(aiMove, 100);
+    }
+  ///////////////////////////
+};
+
+// 게임 종료 조건 확인 (체크메이트 또는 스테일메이트)
+const isGameOver = (playerColor, boardState, isSimulation = false) => {
+    // 1. 합법적인 수가 있는지 먼저 체크 (기존 로직)
+    const legalMoves = getLegalMoves(boardState, playerColor);
+  
+  /////순서 변경/////////
+    if (legalMoves.length === 0) {
+        if (isInCheck(playerColor, boardState)) {
+            return "checkmate";
+        } else {
+            return "stalemate";
+        }
+    }
+  /////////////
+    
+    // 2. [50수 규칙] 50수(100 하프무브) 도달 시 무승부
+    // 시뮬레이션 중이면 다음 수에 100이 될 것이므로 99를 기준으로 판단
+    const halfMoveThreshold = isSimulation ? 99 : 100;
+    if (gameState.halfMoveClock >= halfMoveThreshold) {
+        console.log("Draw by 50-move rule");
+        return "draw_50";
+    }
+
+    // 3. [3회 반복] 현재 위치가 3번 반복되었을 때 무승부
+    const currentHash = computeZobristHash(boardState, playerColor);
+    const count = positionHistory.get(currentHash) || 0;
+    // 시뮬레이션 중이면 2번만 기록되어 있어도 "다음 수에 3번째가 됨"을 의미
+    // 실제 상황이면 이미 기록된 후이므로 3번이어야 함
+    const threshold = isSimulation ? 2 : 3; 
+  
+    if (count >= threshold) {
+        console.log("Draw by 3-fold repetition");
+        return "draw_repetition";
+    }
+
+    return false;
+};
+
+
+// 2. 플레이어 체크메이트 알림 확인 및 명확화
+const updateStatus = () => {
+    let statusText = "";
+    const gameResult = isGameOver(currentTurn, internalBoardState);
+
+    if (gameResult) {
+        gameOver = true;
+        let winner = 'draw';
+        if (gameResult === "draw_50") statusText = "Draw! (50-move rule)";
+        else if (gameResult === "draw_repetition") statusText = "Draw! (3-fold repetition)";
+        else if (gameResult === "stalemate") statusText = "Draw! (Stalemate)";
+        else if (gameResult === "checkmate") {
+            winner = currentTurn === 'white' ? 'Black' : 'White';
+            statusText = `Checkmate! ${winner} wins!`;
+        }
+        if (!resultRecorded) {
+            // PvP 모드에서도 기록하고 싶다면 if 조건문 삭제
+            if (gameMode === 'ai') recordGameResult(winner);
+            resultRecorded = true;
+        }
+
+    } else { // 게임 진행 중
+        const checkedPlayer = isInCheck(currentTurn, internalBoardState) ? currentTurn : null;
+        if (checkedPlayer) {
+            // 체크 상태인 플레이어가 사람인지 AI인지 구분
+            const playerPronoun = checkedPlayer === aiColor ? `AI (${aiColor})` : `Player (${checkedPlayer})`;
+            statusText = `${playerPronoun} is in check! `;
+        }
+      if (gameMode === 'ai') {
+        if (currentTurn === aiColor) {
+            statusText += `AI (${aiColor}) Thinking...`;
+        } else {
+             const playerColor = aiColor === 'white' ? 'black' : 'white';
+            statusText += `Player (${playerColor}) turn.`;
+        }
+      } else {
+            // PvP 모드 표시
+            statusText += `PvP Mode: ${currentTurn.toUpperCase()} turn`;
+        }
+    }
+    statusDisplay.textContent = statusText;
+    statusDisplay.style.display = 'block';
+};
+
+// 폰 승급 체크 (시각적)
+const checkPromotion = (cell) => {
+    const pieceElement = cell.firstChild;
+    if (!pieceElement) return;
+
+    const piece = pieceElement.dataset.piece;
+    const row = parseInt(cell.dataset.row);
+    const isWhitePawn = piece === 'P' && row === 0;
+    const isBlackPawn = piece === 'p' && row === 7;
+
+    if (isWhitePawn || isBlackPawn) {
+         // If AI promotes, handle automatically (e.g., always Queen)
+         if ((isWhitePawn && aiColor === 'white') || (isBlackPawn && aiColor === 'black')) {
+              const promotedPiece = isWhitePawn ? 'Q' : 'q';
+              cell.innerHTML = ''; // Clear the pawn
+              cell.appendChild(createPiece(promotedPiece)); // Add the queen
+              internalBoardState[row][parseInt(cell.dataset.col)] = promotedPiece; // Update internal state
+              console.log(`AI promoted pawn to ${promotedPiece}`);
+              switchTurn(); // Promotion complete, switch turn
+         } else {
+             // Player promotion: Open popup
+             openPromotionPopup(cell, isWhitePawn ? 'white' : 'black');
+         }
+    }
+};
+
+const openPromotionPopup = (cell, color) => {
+    const promotionPieces = color === 'white' ? ['Q', 'R', 'B', 'N'] : ['q', 'r', 'b', 'n'];
+
+    // Disable board interaction while popup is open
+    board.style.pointerEvents = 'none';
+
+    const popup = document.createElement('div');
+    popup.classList.add('promotion-popup');
+     popup.style.position = 'fixed';      // 화면에 고정
+     popup.style.top = '50%';             // 위에서 50% 위치
+     popup.style.left = '50%';            // 왼쪽에서 50% 위치
+     popup.style.transform = 'translate(-50%, -50%)'; // 자기 크기만큼 다시 뒤로 밀어서 정확히 중앙 정렬
+     popup.style.border = '2px solid black';
+     popup.style.background = 'white';
+     popup.style.padding = '10px';
+     popup.style.zIndex = '1000';
+
+
+    const message = document.createElement('p');
+    message.textContent = 'Promote pawn to:';
+     message.style.margin = '0 0 5px 0';
+     message.style.textAlign = 'center';
+    popup.appendChild(message);
+
+     const pieceContainer = document.createElement('div');
+     pieceContainer.style.display = 'flex';
+     pieceContainer.style.gap = '5px';
+
+
+    promotionPieces.forEach((pieceChar) => {
+        const pieceElem = createPiece(pieceChar);
+         pieceElem.style.cursor = 'pointer';
+         pieceElem.style.border = '1px solid #ccc';
+         pieceElem.style.padding = '5px';
+
+        pieceElem.addEventListener('click', () => {
+            const row = parseInt(cell.dataset.row);
+            const col = parseInt(cell.dataset.col);
+
+            cell.innerHTML = ''; // Remove the pawn
+            cell.appendChild(createPiece(pieceChar)); // Add the chosen piece visually
+            internalBoardState[row][col] = pieceChar; // Update internal state
+
+            document.body.removeChild(popup); // Close popup
+             board.style.pointerEvents = 'auto'; // Re-enable board interaction
+
+             console.log(`Player promoted pawn to ${pieceChar}`);
+             switchTurn(); // Promotion chosen, now switch turn
+        });
+         pieceContainer.appendChild(pieceElem);
+    });
+
+    popup.appendChild(pieceContainer);
+    document.body.appendChild(popup);
+};
+
+// 선택 초기화 (체스판)
+const clearSelection = () => {
+    selectedCell?.classList.remove('selected');
+    selectedCell = null;
+};
+
+// 선택 초기화 (보관소)
+const clearStorageSelection = () => {
+    selectedStorageCell?.classList.remove('selected');
+    selectedStorageCell = null;
+};
+
+
+const resetGame = () => {
+  ////////////////////////
+    if (isSelfPlayMode) {
+        // 자가 대국 시에는 현재 턴이 무조건 AI 컬러가 되도록 설정
+        aiColor = currentTurn; 
+    } else if (gameMode === 'ai') {
+        aiColor = aiPlayedBlackLastGame ? 'white' : 'black';
+        aiPlayedBlackLastGame = (aiColor === 'black');
+    } else {
+        // PvP 모드에서는 aiColor가 영향을 주지 않도록 설정 (안전을 위해)
+        aiColor = null; 
+    }
+  //////////////////////
+
+    console.log(`--- New Game ---`);
+
+    // 2. Reset board and state
+    gameState.halfMoveClock = 0;
+    positionHistory.clear();
+    createBoard();
+    initPieces();
+    initStorageAreas();
+    initInternalBoardState(); // Reset internal state based on initPieces setup
+    moveHistory = [];
+    resultRecorded = false; // 추가: 기록 플래그 초기화
+    clearStorageSelection();
+    clearSelection();
+    clearHighlightedMoves();
+    gameOver = false;
+    transpositionTable.clear(); // Clear transposition table
+     killerMoves.forEach(level => level.length = 0); // Clear killer moves
+     Object.keys(historyTable).forEach(key => delete historyTable[key]); // Clear history table
+    resetTimers(); 
+  //////////////
+    kingPos.white = [7, 4];
+    kingPos.black = [0, 4];
+    initGameHash();
+  ////////////////
+
+
+    // 3. Set the starting turn
+    currentTurn = 'white'; // White always starts
+
+    // 4. Update status and trigger AI if it starts
+    updateStatus(); // Set initial status message
+
+    // AI 모드이고 AI가 백(White)이면 이동 예약
+    if (gameMode === 'ai' && currentTurn === aiColor && !gameOver) {
+        setTimeout(aiMove, 500);
+    }
+  
+  /////////////////////
+    // [추가] 게임 리셋 후 첫 수 트리거
+    if (isSelfPlayMode) {
+        setTimeout(triggerNextSelfMove, 500);
+    }
+  /////////////////////
+};
+
+///////////
+const initGameHash = () => {
+    let hash = 0n; // BigInt 리터럴 사용
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const piece = internalBoardState[r][c];
+            if (piece) {
+                hash ^= zobristKeys[r][c][pieceToIndex(piece)];
+            }
+        }
+    }
+    if (currentTurn === 'black') hash ^= turnKey;
+
+    if (gameState.castlingRights.whiteKingside)  hash ^= castleKeys[0];
+    if (gameState.castlingRights.whiteQueenside) hash ^= castleKeys[1];
+    if (gameState.castlingRights.blackKingside)  hash ^= castleKeys[2];
+    if (gameState.castlingRights.blackQueenside) hash ^= castleKeys[3];
+
+    if (gameState.enPassantSquare) {
+        hash ^= enPassantKeys[gameState.enPassantSquare.col];
+    }
+    currentBoardHash = hash;
+};
+///////////
+
+const getGamePhase = (boardState) => {
+    let totalMaterial = 0;
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const piece = boardState[row][col];
+            if (piece && piece.toUpperCase() !== 'K') { // 킹을 제외한 기물 가치 합산
+                totalMaterial += pieceValues[piece];
+            }
+        }
+    }
+
+    if (totalMaterial < ENDGAME_MATERIAL_THRESHOLD) {
+        return 'endgame';
+    }
+    return 'middlegame';
+};
+
+//////////////////////////// 기본 가중치 설정
+let DEFAULT_EVAL_WEIGHTS = {
+    oppDistFromCenter_w : 0.5,
+distBetweenKings_w : 0.2,
+oppKingMoves_w : 0.1,
+
+    mobility: {
+        N: 0.06,  // 나이트는 이동 범위가 좁으므로 칸당 점수를 약간 높게 설정
+        B: 0.05,  // 비숍은 나이트보다 조금 더 넓게 움직임
+        R: 0.03,  // 룩은 후반에 칸수가 많아지므로 너무 높으면 기물 점수를 압도함
+        Q: 0.01   // 퀸은 칸수가 매우 많으므로 아주 낮은 가중치 부여 (과잉 계산 방지)
+    },
+pinnedActivity_w:0.25,
+
+doubledPawn_w:0.2,
+isolatedPawn_w:0.3,
+pawnChain_w:0.15,
+backwardPawn_w:0.25,
+phalanx_w:0.1,
+
+shieldPawn_w:0.2,
+hasLuft_w:0.15,
+backrankLuft_w:0.3,
+dangerzone_w:0.02,
+
+diagonal_Q_w : 0.5,
+diagonal_myPawn_w:0.1,
+diagonal_oppPawn_w:0.15,
+diagonal_others_w:0.05,
+diagonal_empty_w:0.05,
+
+file_Q_w:0.5,
+file_open_w:0.4,
+file_oppPawn_w:0.25,
+file_myPawn_w:0.1,
+
+pawn_innerCenter_w : 0.15,
+pawn_outerCenter_w: 0.05,
+nb_innerCenter_w:0.08,
+nb_outerCenter_w:0.03,
+rq_innerCenter_w:0.04,
+
+pair_endgame_w:0.5,
+pair_middlegame_w:0.3,
+bishopPair_w:0.4,
+
+passedPawnRankBonus: [0.0, 0.2, 0.5, 1.0, 1.8, 2.5, 5.5, 8.0], 
+
+doublecheck_w :2.0,
+fork_w:0.5,
+hanging_w: 0.8,
+exchange_w:0.7,
+no_exchage_w:0.15,
+overloading_w:0.2,
+overloading_Q_w:0.2,
+
+nb_opening_w:0.2,
+Q_opening_w:0.6,
+castling_w:0.9,
+castlingRights_w: 0.3,
+
+pawn_positionbonus_w : 1.0,
+  
+// DEFAULT_EVAL_WEIGHTS 내부에 추가
+scalingParams: {
+    pawnEndgameIntensity: 1.2,       // 엔드게임에서 폰 가치 증가율
+    complexityReductionRate: 0.1,    // 우세할 때 기술적 점수(폰 구조 등) 감소율
+    globalPositionalWeight: 1.0      // 기물 가치 대비 포지션 점수의 전체 비중
+} 
+};
+
+// [2] 로컬 스토리지에서 불러오기 시도
+// 저장된 데이터가 있으면 그것을 쓰고, 없으면 기본값을 복사해서 사용합니다.
+let savedWeights = localStorage.getItem('chess_eval_weights');
+let eval_weights = savedWeights ? JSON.parse(savedWeights) : JSON.parse(JSON.stringify(DEFAULT_EVAL_WEIGHTS));
+
+console.log(savedWeights ? "기존 학습된 가중치를 불러왔습니다." : "기본 가중치로 시작합니다.");
+////////////////////////////
+
+// --- Evaluation Functions (Keep as is, they favor Black with higher scores) ---
+const evaluateBoard = (boardState) => {
+    const phase = getGamePhase(boardState);
+    let totalScore = 0;
+    let totalDetails = {}; 
+
+    const mergeDetails = (source, sign) => {
+        for (let key in source) {
+            if (!totalDetails[key]) {
+                totalDetails[key] = { score: 0, feature: 0 };
+            }
+            totalDetails[key].score += source[key].score * sign;
+            totalDetails[key].feature += source[key].feature * sign;
+        }
+    };
+
+    // --- [A] 기본 상황 정보 계산 ---
+    const [bMat, _] = getMaterialScore(boardState, 'black');
+    const [wMat, __] = getMaterialScore(boardState, 'white');
+    const totalMaterial = bMat + wMat;
+    const materialDiff = bMat - wMat; // 흑 기준 우위 (양수면 흑 우세)
+  
+    // 킹 위치 미리 찾기
+    const blackKingPos = findKing('black', boardState);
+    const whiteKingPos = findKing('white', boardState);
+    
+    // 공격 맵 미리 생성 (필요 시)
+    const blackMoves = getPossibleMoves(boardState, 'black');
+    const whiteMoves = getPossibleMoves(boardState, 'white');
+    
+    // 학습된 스케일 파라미터들
+    const params = eval_weights.scalingParams || { 
+        pawnEndgameIntensity: 1.0, 
+        complexityReductionRate: 0.05, 
+        globalPositionalWeight: 1.0 
+    };
+
+    // --- [B] 동적 스케일 계수 생성 ---
+    // 1. 엔드게임 보정 (남은 기물이 적을수록 폰의 가치를 높임)
+    const endgameContext = Math.max(0, 1.0 - (totalMaterial / 60)); // 기물이 0일 때 1.0, 60 이상일 때 0.0
+    const pawnScale = 1.0 + (endgameContext * params.pawnEndgameIntensity);
+
+    // 2. 우세 시 단순화 보정 (기물 차이가 클수록 포지션 복잡도 점수를 줄임)
+    const advantageContext = Math.abs(materialDiff) / 10; // 기물 10점 차이당 1단위
+    const technicalScale = Math.max(0.1, 1.0 - (advantageContext * params.complexityReductionRate));
+
+    // 3. 전체 포지션 가중치
+    const globalScale = params.globalPositionalWeight;
+
+    // --- 1. 기물 가치 (스케일링 제외 - 절대적 기준) ---
+    totalScore += (bMat - wMat);
+
+    // --- 2. 폰 위치 보너스 (pawnScale 적용) ---
+    let bPosVal = 0, wPosVal = 0;
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const piece = boardState[r][c];
+            if (piece === 'p') bPosVal += pawnPositionValues[7 - r][c];
+            if (piece === 'P') wPosVal += pawnPositionValues[r][c];
+        }
+    }
+    const finalPawnPosWeight = eval_weights.pawn_positionbonus_w * technicalScale * globalScale;
+    const bPosScore = bPosVal * finalPawnPosWeight;
+    const wPosScore = wPosVal * finalPawnPosWeight;
+    totalScore += (bPosScore - wPosScore);
+
+    totalDetails['pawn_positionbonus_w'] = {
+        score: bPosScore - wPosScore,
+        feature: (bPosVal - wPosVal) * technicalScale * globalScale
+    };
+
+    // --- 3. 표준 평가 함수들 순회 (동적 스케일 적용) ---
+    const evalConfigs = [
+        { 
+            fn: (state, color) => evaluatePieceActivity(state, color, (color === 'white' ? whiteKingPos : blackKingPos)), 
+            scale: globalScale 
+        },
+        { fn: evaluatePawnStructure,   scale: technicalScale * globalScale, paramKey: 'complexityReductionRate', context: -advantageContext },
+        { 
+            fn: (state, color) => evaluateKingSafety(state, color, (color === 'white' ? whiteKingPos : blackKingPos)), 
+            scale: globalScale 
+        },
+        { fn: evaluateStrategicLines,  scale: globalScale },
+        { fn: evaluateCenterControl,   scale: technicalScale * globalScale, paramKey: 'complexityReductionRate', context: -advantageContext },
+        { fn: evaluatePiecePairs,      scale: globalScale },
+        { fn: evaluatePassedPawns,     scale: pawnScale * globalScale,      paramKey: 'pawnEndgameIntensity',    context: endgameContext },
+        { 
+            fn: (state, color) => {
+                const myM = (color === 'white' ? whiteMoves : blackMoves);
+                const oppM = (color === 'white' ? blackMoves : whiteMoves);
+                const myK = (color === 'white' ? whiteKingPos : blackKingPos);
+                return evaluateThreats(state, color, totalMaterial, myM, oppM, myK);
+            }, 
+            scale: globalScale 
+        }
+    ];
+
+    evalConfigs.forEach(config => {
+        const [bScore, bDet] = config.fn(boardState, 'black');
+        const [wScore, wDet] = config.fn(boardState, 'white');
+        const rawDiff = bScore - wScore;
+        const scaledDiff = rawDiff * config.scale;
+        
+        totalScore += scaledDiff;
+        mergeDetails(bDet, 1 * config.scale);
+        mergeDetails(wDet, -1 * config.scale);
+
+        // [핵심] 스케일 파라미터(pawnEndgameIntensity 등)의 튜닝을 위한 기여도 기록
+        if (config.paramKey) {
+            const pKey = `scalingParams_${config.paramKey}`;
+            if (!totalDetails[pKey]) totalDetails[pKey] = { score: 0, feature: 0 };
+            totalDetails[pKey].score += scaledDiff;
+            // Feature = 원본점수 * 상황변수 (이것이 가중치에 곱해지는 계수가 됨)
+            // [입실론 로직 적용]
+            const rawFeature = rawDiff * config.context * globalScale;
+            
+            // 만약 점수(rawDiff)가 0이라도 상황(context)이 존재한다면, 
+            // 아주 미세한 방향성(0.0001)을 부여하여 튜닝이 멈추지 않게 함.
+            const epsilon = 0.0001;
+            let finalFeature = rawFeature;
+
+            if (rawFeature === 0 && config.context !== 0) {
+                // 점수가 0이어도 상황(엔드게임 등)이 진행 중이면 상황의 방향대로 epsilon 부여
+                finalFeature = Math.sign(config.context) * epsilon;
+            }
+
+            totalDetails[pKey].feature += finalFeature;
+        }
+    });
+
+    // --- 4. 국면별 전용 평가 (중복 연산 제거 버전) ---
+    if (phase === 'endgame') {
+        // 흑/백 각각 호출 시 이미 구한 bMat, wMat, blackKingPos, whiteKingPos를 넘겨줌
+        const [bEnd, bEndDet] = evaluateEndgameBonus(boardState, 'black', blackKingPos, whiteKingPos, bMat, wMat);
+        const [wEnd, wEndDet] = evaluateEndgameBonus(boardState, 'white', whiteKingPos, blackKingPos, wMat, bMat);
+        
+        const diff = (bEnd - wEnd) * globalScale;
+        totalScore += diff;
+        mergeDetails(bEndDet, 1 * globalScale);
+        mergeDetails(wEndDet, -1 * globalScale);
+    } else {
+        // OpeningDevelopment는 기물 전개를 보므로 보드 상태만 넘겨주되, 
+        // 나중에 퀸의 위치 등을 미리 구한다면 여기도 인자를 추가할 수 있습니다.
+        const [bOpen, bOpenDet] = evaluateOpeningDevelopment(boardState, 'black');
+        const [wOpen, wOpenDet] = evaluateOpeningDevelopment(boardState, 'white');
+        
+        const diff = (bOpen - wOpen) * globalScale;
+        totalScore += diff;
+        mergeDetails(bOpenDet, 1 * globalScale);
+        mergeDetails(wOpenDet, -1 * globalScale);
+    }
+
+    // [최종] globalPositionalWeight 튜닝용 기록
+    // (최종 점수에서 기물 가치를 뺀 나머지가 곧 전체 포지션 점수임)
+    const totalPositionalScore = totalScore - (bMat - wMat);
+    // globalScale이 0일 경우 Infinity가 발생하는 것을 방지
+    const safeGlobalScale = Math.max(0.001, globalScale);
+
+    totalDetails['scalingParams_globalPositionalWeight'] = {
+        score: totalPositionalScore,
+      // 부호를 유지하되, 0 근처에서만 불응답(Dead-zone) 처리
+        feature: Math.abs(totalPositionalScore)< 0.01 ? 0 :  totalPositionalScore/safeGlobalScale
+    };
+
+    return [totalScore, totalDetails];
+};
+
+const evaluateEndgameBonus = (boardState, color, myKing, oppKing, myMaterial, oppMaterial) => {
+    let totalScore = 0;
+    let details = {}; // { 가중치키: { score: 기여점수, feature: 원천값 } }
+    
+    const isWhite = color === 'white';
+    const oppColor = isWhite ? 'black' : 'white';
+    
+    if (myMaterial > oppMaterial + 2) {
+        if (!myKing || !oppKing) return [0, {}];
+
+        // (A) 상대 킹을 구석으로 몰기
+        const distFromCenterVal = Math.abs(oppKing[0] - 3.5) + Math.abs(oppKing[1] - 3.5);
+        const distFromCenterScore = distFromCenterVal * eval_weights.oppDistFromCenter_w;
+        
+        details['oppDistFromCenter_w'] = {
+            score: distFromCenterScore,
+            feature: distFromCenterVal
+        };
+        totalScore += distFromCenterScore;
+
+        // (B) 우리 킹과 상대 킹의 거리 좁히기
+        const kingDistVal = 14 - (Math.abs(myKing[0] - oppKing[0]) + Math.abs(myKing[1] - oppKing[1]));
+        const kingDistScore = kingDistVal * eval_weights.distBetweenKings_w;
+        
+        details['distBetweenKings_w'] = {
+            score: kingDistScore,
+            feature: kingDistVal
+        };
+        totalScore += kingDistScore;
+        
+        // (C) 상대 킹의 이동성 제한
+        const oppKingMovesRaw = getValidMoves_Raw(isWhite ? 'k' : 'K', oppKing[0], oppKing[1], boardState);
+        const restrictionVal = 8 - oppKingMovesRaw.length;
+        const restrictionScore = restrictionVal * eval_weights.oppKingMoves_w;
+        
+        details['oppKingMoves_w'] = {
+            score: restrictionScore,
+            feature: restrictionVal
+        };
+        totalScore += restrictionScore;
+    }
+    
+    return [totalScore, details];
+};
+
+const getMaterialScore = (boardState, color) => {
+    let totalScore = 0;
+    // 기물 가치는 고정(Fixed)이므로 details 객체는 비워둡니다.
+    let details = {}; 
+    
+    const isWhite = color === 'white';
+    
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const piece = boardState[row][col];
+            if (piece) {
+                const pieceIsWhite = piece === piece.toUpperCase();
+                if (pieceIsWhite === isWhite) {
+                    const pUpper = piece.toUpperCase();
+                    // pieceValues에서 정의된 상수를 그대로 사용
+                    totalScore += pieceValues[pUpper];
+                }
+            }
+        }
+    }
+    
+    // [총점, {}] 형태로 반환하여 튜닝 엔진이 무시하게 함
+    return [totalScore, details];
+};
+
+const evaluatePieceActivity = (boardState, color, kingPos) => {
+    let totalActivityScore = 0;
+    let details = {
+        'mobility_N': { score: 0, feature: 0 },
+        'mobility_B': { score: 0, feature: 0 },
+        'mobility_R': { score: 0, feature: 0 },
+        'mobility_Q': { score: 0, feature: 0 },
+        'pinnedActivity_w': { score: 0, feature: 0 }
+    };
+
+    const isWhite = color === 'white';
+
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const piece = boardState[row][col];
+            
+            if (piece && (isWhite ? piece === piece.toUpperCase() : piece === piece.toLowerCase())) {
+                const pUpper = piece.toUpperCase();
+                
+                if (eval_weights.mobility.hasOwnProperty(pUpper)) {
+                    const weight = eval_weights.mobility[pUpper];
+                    const moves = getValidMoves_Raw(piece, row, col, boardState);
+                    
+                    let baseScore = moves.length * weight;
+                    let finalPieceScore = baseScore;
+
+                    // 핀(Pin) 상태 확인
+                    if (isPiecePinned(boardState, row, col, color, kingPos)) {
+                        // 핀에 걸린 기물의 최종 점수는 원래 점수 * 감쇄 가중치(0.25 등)
+                        finalPieceScore = baseScore * eval_weights.pinnedActivity_w;
+                        
+                        // [튜닝 포인트] 핀 가중치(pinnedActivity_w)의 학습을 위한 기록
+                        // feature: 핀에 걸리지 않았을 때 얻었을 "기본 점수(baseScore)"
+                        // score: 핀 가중치가 적용된 후 "최종적으로 남은 점수"
+                        details['pinnedActivity_w'].feature += baseScore;
+                        details['pinnedActivity_w'].score += finalPieceScore;
+                    } else {
+                        // 핀에 걸리지 않은 경우, 해당 기물의 순수 활동성 점수 기록
+                        const key = `mobility_${pUpper}`;
+                        details[key].feature += moves.length;
+                        details[key].score += finalPieceScore;
+                    }
+
+                    totalActivityScore += finalPieceScore;
+                }
+            }
+        }
+    }
+    
+    return [totalActivityScore, details];
+};
+
+const evaluatePawnStructure = (boardState, color) => {
+    let totalScore = 0;
+    let details = {
+        'doubledPawn_w': { score: 0, feature: 0 },
+        'isolatedPawn_w': { score: 0, feature: 0 },
+        'pawnChain_w': { score: 0, feature: 0 },
+        'backwardPawn_w': { score: 0, feature: 0 },
+        'phalanx_w': { score: 0, feature: 0 }
+    };
+
+    const isWhite = color === 'white';
+    const myPawn = isWhite ? 'P' : 'p';
+    const direction = isWhite ? -1 : 1;
+    
+    // 파일별 폰 위치 저장
+    const pawnFiles = Array(8).fill().map(() => []);
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            if (boardState[r][c] === myPawn) pawnFiles[c].push(r);
+        }
+    }
+
+    for (let col = 0; col < 8; col++) {
+        const rows = pawnFiles[col];
+        
+        // 1. 겹친 폰 (Doubled Pawn)
+        if (rows.length > 1) {
+            const count = rows.length - 1;
+            const score = -(count * eval_weights.doubledPawn_w);
+            details['doubledPawn_w'].score += score;
+            details['doubledPawn_w'].feature += -count;
+            totalScore += score;
+        }
+
+        for (const row of rows) {
+            const leftFile = col > 0 ? pawnFiles[col - 1] : [];
+            const rightFile = col < 7 ? pawnFiles[col + 1] : [];
+            const neighbors = [...leftFile, ...rightFile];
+
+            // 2. 고립된 폰 (Isolated Pawn)
+            if (neighbors.length === 0) {
+                const score = -eval_weights.isolatedPawn_w;
+                details['isolatedPawn_w'].score += score;
+                details['isolatedPawn_w'].feature += -1;
+                totalScore += score;
+            } else {
+                // 3. 폰 체인 (Pawn Chain)
+                const supportRow = row - direction; 
+                const isSupported = (col > 0 && boardState[supportRow]?.[col - 1] === myPawn) ||
+                                    (col < 7 && boardState[supportRow]?.[col + 1] === myPawn);
+                if (isSupported) {
+                    const score = eval_weights.pawnChain_w;
+                    details['pawnChain_w'].score += score;
+                    details['pawnChain_w'].feature += 1;
+                    totalScore += score;
+                }
+
+                // 4. 후진 폰 (Backward Pawn)
+                const isBackward = neighbors.every(nRow => 
+                    isWhite ? nRow < row : nRow > row
+                );
+                if (isBackward) {
+                    const score = -eval_weights.backwardPawn_w;
+                    details['backwardPawn_w'].score += score;
+                    details['backwardPawn_w'].feature += -1;
+                    totalScore += score;
+                }
+            }
+
+            // 5. 팔랑크스 (Phalanx)
+            const startingRow = isWhite ? 6 : 1; 
+            const hasPhalanx = (col < 7 && boardState[row][col + 1] === myPawn) || 
+                               (col > 0 && boardState[row][col - 1] === myPawn);
+            
+            if (row !== startingRow && hasPhalanx) {
+                const score = eval_weights.phalanx_w;
+                details['phalanx_w'].score += score;
+                details['phalanx_w'].feature += 1; // 팔랑크스 구조 1개 발견
+                totalScore += score;
+            }
+        }
+    }
+
+    return [totalScore, details];
+};
+
+const evaluateKingSafety = (boardState, color, kingPos) => {
+    let totalScore = 0;
+    let details = {
+        'shieldPawn_w': { score: 0, feature: 0 },
+        'hasLuft_w': { score: 0, feature: 0 },
+        'backrankLuft_w': { score: 0, feature: 0 },
+        'dangerzone_w': { score: 0, feature: 0 }
+    };
+
+    const isWhite = color === 'white';
+    if (!kingPos) return [0, details];
+    const [kr, kc] = kingPos;
+
+    // 1. 캐슬링 구역(Side) 쉴드 및 숨구멍(Luft) 평가
+    if (kc <= 2 || kc >= 5) {
+        const direction = isWhite ? -1 : 1;
+        const rank2 = isWhite ? 6 : 1;
+        const rank3 = isWhite ? 5 : 2;
+
+        let pawnCount = 0;
+        let hasLuft = false;
+
+        for (let dc = -1; dc <= 1; dc++) {
+            const col = kc + dc;
+            if (col < 0 || col > 7) continue;
+
+            if (boardState[rank2][col]?.toUpperCase() === 'P') {
+                pawnCount++;
+            } else if (boardState[rank3][col]?.toUpperCase() === 'P') {
+                pawnCount++;
+                if (col === 0 || col === 7 || col === 1 || col === 6) {
+                    hasLuft = true; 
+                }
+            }
+        }
+
+        // (A) 쉴드 폰 보너스
+        const shieldScore = pawnCount * eval_weights.shieldPawn_w;
+        details['shieldPawn_w'].score = shieldScore;
+        details['shieldPawn_w'].feature = pawnCount;
+        totalScore += shieldScore;
+
+        // (B) 백랭크 안전성 (Luft vs Backrank Penalty)
+        if (hasLuft) {
+            const luftScore = eval_weights.hasLuft_w;
+            details['hasLuft_w'].score = luftScore;
+            details['hasLuft_w'].feature = 1;
+            totalScore += luftScore;
+        } else {
+            if (isBackRankVulnerable(boardState, color)) {
+                const brPenalty = -eval_weights.backrankLuft_w;
+                details['backrankLuft_w'].score = brPenalty;
+                details['backrankLuft_w'].feature = -1; // 위험 상황 1건 발생
+                totalScore += brPenalty;
+            }
+        }
+    }
+
+    // 2. 위험 지역(Danger Zone) 감시
+    let attackers = 0;
+    for (let r = kr - 2; r <= kr + 2; r++) {
+        for (let c = kc - 2; c <= kc + 2; c++) {
+            if (r >= 0 && r < 8 && c >= 0 && c < 8) {
+                const piece = boardState[r][c];
+                if (piece && (isWhite ? piece === piece.toLowerCase() : piece === piece.toUpperCase())) {
+                    attackers++;
+                    // 퀸이나 룩은 공격 포인트 가중
+                    if (piece.toUpperCase() === 'Q' || piece.toUpperCase() === 'R') attackers++;
+                }
+            }
+        }
+    }
+
+    // (C) 공격자 수에 따른 감점 (제곱 비례)
+    if (attackers > 0) {
+        const attackerFactor = attackers * attackers;
+        const dangerPenalty = -(attackerFactor * eval_weights.dangerzone_w);
+        details['dangerzone_w'].score = dangerPenalty;
+        details['dangerzone_w'].feature = attackerFactor; // 제곱된 값이 곧 가중치의 계수(feature)가 됨
+        totalScore += dangerPenalty;
+    }
+
+    return [totalScore, details];
+};
+
+const isBackRankVulnerable = (boardState, color) => {
+    const backRank = (color === 'white') ? 7 : 0;
+    let defenders = 0;
+    for (let c = 0; c < 8; c++) {
+        const p = boardState[backRank][c];
+        if (p && (color === 'white' ? p === 'R' || p === 'Q' : p === 'r' || p === 'q')) {
+            defenders++;
+        }
+    }
+    return defenders < 1; // 백랭크에 룩이나 퀸이 하나도 없으면 취약
+};
+
+const evaluateStrategicLines = (boardState, color) => {
+    let totalScore = 0;
+    let details = {};
+
+    const isWhite = color === 'white';
+    const myPawn = isWhite ? 'P' : 'p';
+    const oppPawn = isWhite ? 'p' : 'P';
+
+    // details 객체 초기화 로직 (병합을 편하게 하기 위함)
+    const mergeDetails = (source) => {
+        for (let key in source) {
+            if (!details[key]) details[key] = { score: 0, feature: 0 };
+            details[key].score += source[key].score;
+            details[key].feature += source[key].feature;
+        }
+    };
+
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const piece = boardState[row][col];
+            if (!piece || (isWhite ? piece !== piece.toUpperCase() : piece !== piece.toLowerCase())) continue;
+
+            const pUpper = piece.toUpperCase();
+
+            // 1. 파일 평가
+            if (pUpper === 'R' || pUpper === 'Q') {
+                const [fScore, fDetails] = evaluateFilePurity(boardState, col, myPawn, oppPawn, pUpper);
+                totalScore += fScore;
+                mergeDetails(fDetails);
+            }
+
+            // 2. 대각선 평가
+            if (pUpper === 'B' || pUpper === 'Q') {
+                const [dScore, dDetails] = evaluateDiagonalPurity(boardState, row, col, color, myPawn, oppPawn, pUpper);
+                totalScore += dScore;
+                mergeDetails(dDetails);
+            }
+        }
+    }
+    return [totalScore, details];
+};
+
+const evaluateDiagonalPurity = (boardState, row, col, color, myPawn, oppPawn, pieceType) => {
+    let diagonalScore = 0;
+    let localDetails = {
+        'diagonal_myPawn_w': { score: 0, feature: 0 },
+        'diagonal_oppPawn_w': { score: 0, feature: 0 },
+        'diagonal_others_w': { score: 0, feature: 0 },
+        'diagonal_empty_w': { score: 0, feature: 0 },
+        'diagonal_Q_w': { score: 0, feature: 0 }
+    };
+
+    const directions = [[1, 1], [1, -1], [-1, 1], [-1, -1]];
+    // 퀸일 경우 멀티플라이어 적용, 아니면 1.0
+    const qWeight = (pieceType === 'Q') ? eval_weights.diagonal_Q_w : 1.0;
+
+    for (const [dr, dc] of directions) {
+        let r = row + dr;
+        let c = col + dc;
+        
+        while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+            const target = boardState[r][c];
+            let key = '';
+            let val = 0;
+
+            if (target === myPawn) {
+                key = 'diagonal_myPawn_w';
+                val = -eval_weights.diagonal_myPawn_w;
+            } else if (target === oppPawn) {
+                key = 'diagonal_oppPawn_w';
+                val = eval_weights.diagonal_oppPawn_w;
+            } else if (target) {
+                key = 'diagonal_others_w';
+                val = eval_weights.diagonal_others_w;
+            } else {
+                key = 'diagonal_empty_w';
+                val = eval_weights.diagonal_empty_w;
+            }
+
+            if (key) {
+                const finalScore = val * qWeight;
+                diagonalScore += finalScore;
+                
+                // 가중치 업데이트를 위한 기록
+                // feature는 가중치에 곱해지는 '계수'이므로 qWeight를 곱해줌
+                localDetails[key].score += finalScore;
+                localDetails[key].feature += (key === 'diagonal_myPawn_w' ? -1 : 1) * qWeight;
+            }
+            
+            if (target) break; // 기물이 있으면 해당 방향 중단
+            r += dr; c += dc;
+        }
+    }
+
+    // 퀸일 경우 퀸 가중치(diagonal_Q_w) 자체에 대한 기여도도 기록
+    if (pieceType === 'Q') {
+        const baseScore = qWeight !== 0 ? diagonalScore / qWeight : 0; // 퀸 가중치 적용 전 점수
+        localDetails['diagonal_Q_w'].score = diagonalScore;
+        localDetails['diagonal_Q_w'].feature = baseScore;
+    }
+
+    return [diagonalScore, localDetails];
+};
+
+const evaluateFilePurity = (boardState, col, myPawn, oppPawn, pieceType) => {
+    let fileScore = 0;
+    let localDetails = {
+        'file_open_w': { score: 0, feature: 0 },
+        'file_oppPawn_w': { score: 0, feature: 0 },
+        'file_myPawn_w': { score: 0, feature: 0 },
+        'file_Q_w': { score: 0, feature: 0 }
+    };
+
+    let myPawnCount = 0;
+    let oppPawnCount = 0;
+    for (let r = 0; r < 8; r++) {
+        if (boardState[r][col] === myPawn) myPawnCount++;
+        if (boardState[r][col] === oppPawn) oppPawnCount++;
+    }
+
+    const qWeight = (pieceType === 'Q') ? eval_weights.file_Q_w : 1.0;
+    let key = '';
+    let val = 0;
+
+    if (myPawnCount === 0 && oppPawnCount === 0) {
+        key = 'file_open_w';
+        val = eval_weights.file_open_w;
+    } else if (myPawnCount === 0 && oppPawnCount > 0) {
+        key = 'file_oppPawn_w';
+        val = eval_weights.file_oppPawn_w;
+    } else if (myPawnCount > 0 && oppPawnCount === 0) {
+        key = 'file_myPawn_w';
+        val = -eval_weights.file_myPawn_w;
+    }
+
+    if (key) {
+        fileScore = val * qWeight;
+        localDetails[key].score = fileScore;
+        localDetails[key].feature = (key === 'file_myPawn_w' ? -1 : 1) * qWeight;
+
+        if (pieceType === 'Q') {
+            localDetails['file_Q_w'].score = fileScore;
+            localDetails['file_Q_w'].feature = val;
+        }
+    }
+
+    return [fileScore, localDetails];
+};
+
+const evaluateCenterControl = (boardState, color) => {
+    let totalScore = 0;
+    let details = {
+        'pawn_innerCenter_w': { score: 0, feature: 0 },
+        'pawn_outerCenter_w': { score: 0, feature: 0 },
+        'nb_innerCenter_w': { score: 0, feature: 0 },
+        'nb_outerCenter_w': { score: 0, feature: 0 },
+        'rq_innerCenter_w': { score: 0, feature: 0 }
+    };
+
+    const isWhite = color === 'white';
+    
+    // 중앙 영역 정의
+    const innerCenter = [[3, 3], [3, 4], [4, 3], [4, 4]];
+    const outerCenter = [
+        [2, 2], [2, 3], [2, 4], [2, 5],
+        [3, 2], [3, 5], [4, 2], [4, 5],
+        [5, 2], [5, 3], [5, 4], [5, 5]
+    ];
+
+    // 헬퍼: 특정 가중치 항목에 점수와 횟수를 기록
+    const addControl = (key, count = 1) => {
+        const weight = eval_weights[key];
+        const score = weight * count;
+        details[key].score += score;
+        details[key].feature += count;
+        totalScore += score;
+    };
+
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const piece = boardState[row][col];
+            if (!piece || (isWhite ? piece !== piece.toUpperCase() : piece !== piece.toLowerCase())) continue;
+
+            const pUpper = piece.toUpperCase();
+            
+            // 1. 폰의 중앙 통제 (대각선 공격 방향)
+            if (pUpper === 'P') {
+                const dir = isWhite ? -1 : 1;
+                const attackRow = row + dir;
+                if (attackRow >= 0 && attackRow < 8) {
+                    [col - 1, col + 1].forEach(attackCol => {
+                        if (attackCol >= 0 && attackCol < 8) {
+                            if (isSquareInCenter(attackRow, attackCol, innerCenter)) {
+                                addControl('pawn_innerCenter_w');
+                            } else if (isSquareInCenter(attackRow, attackCol, outerCenter)) {
+                                addControl('pawn_outerCenter_w');
+                            }
+                        }
+                    });
+                }
+            } 
+            // 2. 나이트와 비숍의 중앙 압박
+            else if (pUpper === 'N' || pUpper === 'B') {
+                const moves = getValidMoves_Raw(piece, row, col, boardState);
+                for (const [mRow, mCol] of moves) {
+                    if (isSquareInCenter(mRow, mCol, innerCenter)) {
+                        addControl('nb_innerCenter_w');
+                    } else if (isSquareInCenter(mRow, mCol, outerCenter)) {
+                        addControl('nb_outerCenter_w');
+                    }
+                }
+            }
+            // 3. 퀸과 루크의 중앙 원거리 지원
+            else if (pUpper === 'R' || pUpper === 'Q') {
+                const moves = getValidMoves_Raw(piece, row, col, boardState);
+                for (const [mRow, mCol] of moves) {
+                    if (isSquareInCenter(mRow, mCol, innerCenter)) {
+                        addControl('rq_innerCenter_w');
+                    }
+                    // RQ는 OuterCenter 보너스는 생략 (기존 로직 유지)
+                }
+            }
+        }
+    }
+    return [totalScore, details];
+};
+
+const isSquareInCenter = (r, c, centerArray) => {
+    return centerArray.some(([cr, cc]) => cr === r && cc === c);
+};
+
+const evaluatePiecePairs = (boardState, color) => {
+    let totalScore = 0;
+    // [핵심] details 객체를 미리 정의하고 모든 항목을 0으로 초기화
+    let details = {
+        'bishopPair_w': { score: 0, feature: 0 }
+    };
+    
+    const isWhite = color === 'white';
+    let myBishops = 0;
+
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const p = boardState[r][c];
+            if (p && p.toUpperCase() === 'B') {
+                if (isWhite ? p === 'B' : p === 'b') myBishops++;
+            }
+        }
+    }
+
+    // 비숍 쌍이 있을 때만 값을 업데이트
+    if (myBishops >= 2) {
+        totalScore = eval_weights.bishopPair_w;
+        details['bishopPair_w'].score = totalScore;
+        details['bishopPair_w'].feature = 1;
+    }
+
+    // 비숍 쌍이 있든 없든 항상 동일한 구조의 [점수, details]를 반환
+    return [totalScore, details];
+};
+
+const evaluatePassedPawns = (boardState, color) => {
+    let totalScore = 0;
+    let details = {}; // { 'passedPawnRankBonus_5': { score: 2.5, feature: 1 } ... }
+
+    const isWhite = color === 'white';
+    const pawn = isWhite ? 'P' : 'p';
+    const opponentPawn = isWhite ? 'p' : 'P';
+    const direction = isWhite ? -1 : 1;
+
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            // 해당 색깔의 폰을 찾으면
+            if (boardState[row][col] === pawn) {
+                let isPassed = true;
+                
+                // 전방 및 인접 파일에 상대 폰이 있는지 확인
+                for (let checkRow = row + direction; checkRow >= 0 && checkRow < 8; checkRow += direction) {
+                    for (let checkCol = col - 1; checkCol <= col + 1; checkCol++) {
+                        if (checkCol < 0 || checkCol > 7) continue;
+                        if (boardState[checkRow][checkCol] === opponentPawn) {
+                            isPassed = false;
+                            break;
+                        }
+                    }
+                    if (!isPassed) break;
+                }
+
+                if (isPassed) {
+                    // 랭크 계산 (White는 7-row, Black은 row)
+                    const rankIndex = isWhite ? (7 - row) : row;
+                    const weight = eval_weights.passedPawnRankBonus[rankIndex];
+                    const key = `passedPawnRankBonus_${rankIndex}`;
+
+                    // 세부 정보 기록
+                    if (!details[key]) {
+                        details[key] = { score: 0, feature: 0 };
+                    }
+                    details[key].score += weight;
+                    details[key].feature += 1; // 해당 랭크의 통과한 폰 개수
+                    
+                    totalScore += weight;
+                }
+            }
+        }
+    }
+    return [totalScore, details];
+};
+
+const getDynamicPieceValue = (piece, row, col, totalMaterial) => {
+    if (!piece) return [0, {}];
+
+    const pUpper = piece.toUpperCase();
+    const isWhite = piece === piece.toUpperCase();
+    let details = {}; 
+    
+    // 1. 기물 기본 가치 (Fixed)
+    let totalValue = pieceValues[pUpper];
+
+    // 2. 폰 보너스 계산 (스무스한 전이 로직)
+    if (pUpper === 'P') {
+        // [핵심] 엔드게임 진행도를 0.0(초반) ~ 1.0(완전한 엔드게임)으로 계산
+        // 기물 합이 60점 이상이면 0, 0점에 가까워질수록 1.0에 수렴
+        const endgameProgress = Math.max(0.0001, Math.min(1, 1.0 - (totalMaterial / 60)));
+        
+        const rankForBonus = isWhite ? (7 - row) : row;
+        const baseBonus = eval_weights.passedPawnRankBonus[rankForBonus];
+        
+        // 보너스에 진행도를 곱하여 스무스하게 적용
+        const smoothedBonus = baseBonus * endgameProgress;
+
+        totalValue += smoothedBonus;
+        
+        // 튜닝 엔진이 인식할 수 있도록 기록
+        const key = `passedPawnRankBonus_${rankForBonus}`;
+        details[key] = {
+            score: smoothedBonus,
+            feature: endgameProgress // 가중치에 곱해진 '상황 계수'를 feature로 전달
+        };
+    }
+    
+    return [totalValue, details];
+};
+
+const evaluateThreats = (boardState, color, totalMaterial, myMoves, opponentMoves, kingPos) => {
+    let totalThreatPenalty = 0;
+    let details = {
+        'doublecheck_w': { score: 0, feature: 0 },
+        'fork_w': { score: 0, feature: 0 },
+        'hanging_w': { score: 0, feature: 0 },
+        'exchange_w': { score: 0, feature: 0 },
+        'no_exchange_w': { score: 0, feature: 0 },
+        'overloading_w': { score: 0, feature: 0 },
+        'overloading_Q_w': { score: 0, feature: 0 }
+    };
+
+    const isWhite = color === 'white';
+    const opponentColor = isWhite ? 'black' : 'white';
+
+    const defenderTaskCount = new Map();
+
+    // 세부 정보를 병합하는 헬퍼 함수
+    const mergeDetails = (source) => {
+        if (!source) return;
+        for (let key in source) {
+            if (!details[key]) details[key] = { score: 0, feature: 0 };
+            details[key].score += source[key].score;
+            details[key].feature += source[key].feature;
+        }
+    };
+
+    // 1. 더블 체크 탐지
+    if (kingPos) {
+        const [kr, kc] = kingPos;
+        const kingAttackers = opponentMoves.filter(m => m.to[0] === kr && m.to[1] === kc);
+        if (kingAttackers.length >= 2) {
+            const weight = eval_weights.doublecheck_w;
+            details['doublecheck_w'].score -= weight;
+            details['doublecheck_w'].feature -= 1;
+            totalThreatPenalty += weight;
+        }
+    }
+
+    // 2. 포크 탐지
+    const attacksByPiece = {};
+    opponentMoves.forEach(m => {
+        const target = boardState[m.to[0]][m.to[1]];
+        if (target && (isWhite ? target === target.toUpperCase() : target === target.toLowerCase())) {
+            const attackerKey = `${m.from[0]},${m.from[1]}`;
+            if (!attacksByPiece[attackerKey]) attacksByPiece[attackerKey] = [];
+            
+            const [tVal, tDetails] = getDynamicPieceValue(target, m.to[0], m.to[1], totalMaterial);
+            const attackerValue = pieceValues[m.piece.toUpperCase()];
+            const isDefended = myMoves.some(mm => mm.to[0] === m.to[0] && mm.to[1] === m.to[1]);
+            
+            if (attackerValue < tVal || !isDefended) {
+                attacksByPiece[attackerKey].push({ r: m.to[0], c: m.to[1], val: tVal, details: tDetails });
+            }
+        }
+    });
+
+    for (const key in attacksByPiece) {
+        const targets = attacksByPiece[key];
+        if (targets.length >= 2) {
+            targets.sort((a, b) => b.val - a.val);
+            const secondBestTarget = targets[1];
+            const penalty = secondBestTarget.val * eval_weights.fork_w;
+            
+            details['fork_w'].score -= penalty;
+            details['fork_w'].feature -= secondBestTarget.val; // 기물 가치가 계수가 됨
+            totalThreatPenalty += penalty;
+            mergeDetails(secondBestTarget.details); // 폰 보너스 등 세부사항 병합
+        }
+    }
+
+    // 3. Hanging 및 SEE 교환 평가
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const piece = boardState[r][c];
+            if (!piece || (isWhite ? piece !== piece.toUpperCase() : piece !== piece.toLowerCase())) continue;
+
+            const [pVal, pDetails] = getDynamicPieceValue(piece, r, c, totalMaterial);
+            const attackers = opponentMoves.filter(m => m.to[0] === r && m.to[1] === c);
+            
+            if (attackers.length > 0) {
+                const defenders = myMoves.filter(m => 
+                    m.to[0] === r && m.to[1] === c && !(m.from[0] === r && m.from[1] === c) &&
+                    !isPiecePinned(boardState, m.from[0], m.from[1], color)
+                );
+              
+                defenders.forEach(d => {
+                    const dKey = `${d.from[0]},${d.from[1]}`;
+                    if (!defenderTaskCount.has(dKey)) defenderTaskCount.set(dKey, []);
+                    defenderTaskCount.get(dKey).push({r, c});
+                });
+
+                let currentPenalty = 0;
+                if (defenders.length === 0) {
+                    // Hanging Piece
+                    currentPenalty = (pVal * eval_weights.hanging_w) + 0.2;
+                    details['hanging_w'].score -= currentPenalty;
+                    details['hanging_w'].feature -= pVal;
+                } else {
+                    // SEE 교환 시뮬레이션
+                    const attackerVals = attackers.map(a => getSEEValue(a.piece, a.from[0], a.from[1], totalMaterial)[0]).sort((a,b)=>a-b);
+                    const defenderVals = defenders.map(d => getSEEValue(d.piece, d.from[0], d.from[1], totalMaterial)[0]).sort((a,b)=>a-b);
+                    
+                    let score = pVal; 
+                    let currentScore = score;
+                    for (let i = 0; i < attackerVals.length; i++) {
+                        if (i < defenderVals.length) {
+                            currentScore -= attackerVals[i];
+                            if (currentScore < score) score = currentScore;
+                            if (i + 1 < attackerVals.length) {
+                                currentScore += defenderVals[i];
+                                if (currentScore > score) score = currentScore;
+                            }
+                        } else break;
+                    }
+
+                    if (score > 0) {
+                        currentPenalty = (score * eval_weights.exchange_w) + 0.2;
+                        details['exchange_w'].score -= currentPenalty;
+                        details['exchange_w'].feature -= score;
+                    } else {
+                        currentPenalty = eval_weights.no_exchange_w;
+                        details['no_exchange_w'].score -= currentPenalty;
+                        details['no_exchange_w'].feature -= 1;
+                    }
+                }
+                const maxSafe = pVal * 0.9;
+                currentPenalty = Math.min(currentPenalty, maxSafe);
+                totalThreatPenalty += currentPenalty;
+                mergeDetails(pDetails);
+            }
+        }
+    }
+  
+    // 4. 과부하 패널티
+    defenderTaskCount.forEach((tasks, piecePos) => {
+        if (tasks.length >= 2) {
+            let totalTaskValue = 0;
+            let maxTaskValue = 0;
+            tasks.forEach(pos => {
+                const targetPiece = boardState[pos.r][pos.c];
+                const [val, tDetails] = getDynamicPieceValue(targetPiece, pos.r, pos.c, totalMaterial);
+                totalTaskValue += val;
+                if (val > maxTaskValue) maxTaskValue = val;
+                mergeDetails(tDetails);
+            });
+
+            const overloadVal = totalTaskValue - maxTaskValue;
+            let penalty = overloadVal * eval_weights.overloading_w;
+            details['overloading_w'].score -= penalty;
+            details['overloading_w'].feature -= overloadVal;
+
+            const [dR, dC] = piecePos.split(',').map(Number);
+            const defenderPiece = boardState[dR][dC];
+            if (defenderPiece.toUpperCase() === 'Q') {
+                const qPenalty = eval_weights.overloading_Q_w;
+                penalty += qPenalty;
+                details['overloading_Q_w'].score -= qPenalty;
+                details['overloading_Q_w'].feature -= 1;
+            }
+            totalThreatPenalty += penalty;
+        }
+    });
+
+    return [-totalThreatPenalty, details];
+};
+
+///////////////
+const getSEEValue = (piece, row, col, totalMaterial) => {
+    const upper = piece.toUpperCase();
+    
+    // 킹은 동적 가치와 상관없이 항상 최우선 순위 (매우 높은 가상 가치)
+    if (upper === 'K') return 1000; 
+
+    // 나머지 기물들은 위치와 국면이 반영된 동적 가치를 반환
+    return getDynamicPieceValue(piece, row, col, totalMaterial);
+};
+///////////////
+
+const isPiecePinned = (boardState, r, c, color, kingPos) => {
+    if (!kingPos) return false;
+
+    const dr = r - kingPos[0];
+    const dc = c - kingPos[1];
+
+    // 수직, 수평, 대각선 라인에 있는지 확인
+    if (dr === 0 || dc === 0 || Math.abs(dr) === Math.abs(dc)) {
+        const stepR = dr === 0 ? 0 : dr / Math.abs(dr);
+        const stepC = dc === 0 ? 0 : dc / Math.abs(dc);
+
+        let currR = r + stepR;
+        let currC = c + stepC;
+
+        while (currR >= 0 && currR < 8 && currC >= 0 && currC < 8) {
+            const p = boardState[currR][currC];
+            if (p) {
+                const isOpponent = (color === 'white' ? p === p.toLowerCase() : p === p.toUpperCase());
+                if (isOpponent) {
+                    const up = p.toUpperCase();
+                    if (up === 'Q') return true;
+                    if ((dr === 0 || dc === 0) && up === 'R') return true;
+                    if (Math.abs(dr) === Math.abs(dc) && up === 'B') return true;
+                }
+                break; 
+            }
+            currR += stepR;
+            currC += stepC;
+        }
+    }
+    return false;
+};
+
+////////////
+const evaluateOpeningDevelopment = (boardState, color) => {
+    let totalScore = 0;
+    let details = {
+        'nb_opening_w': { score: 0, feature: 0 },
+        'Q_opening_w': { score: 0, feature: 0 },
+        'castling_w': { score: 0, feature: 0 },
+        'castlingRights_w': { score: 0, feature: 0 }
+    };
+
+    const isWhite = color === 'white';
+    const backRank = isWhite ? 7 : 0;
+
+    // 1. 나이트, 비숍 전개 체크
+    const piecesAtHome = [
+        { r: backRank, c: 1, type: isWhite ? 'N' : 'n' }, // 퀸사이드 나이트
+        { r: backRank, c: 6, type: isWhite ? 'N' : 'n' }, // 킹사이드 나이트
+        { r: backRank, c: 2, type: isWhite ? 'B' : 'b' }, // 퀸사이드 비숍
+        { r: backRank, c: 5, type: isWhite ? 'B' : 'b' }  // 킹사이드 비숍
+    ];
+
+    let developedCount = 0;
+    let homeCount = 0;
+
+    piecesAtHome.forEach(p => {
+        if (boardState[p.r][p.c] === p.type) {
+            homeCount++;
+        } else {
+            developedCount++;
+        }
+    });
+
+    if (homeCount > 0) {
+        const penalty = -(homeCount * eval_weights.nb_opening_w);
+        details['nb_opening_w'].score = penalty;
+        details['nb_opening_w'].feature = -homeCount; // 집에 남아있는 기물 수가 계수
+        totalScore += penalty;
+    }
+
+    // 2. 조기 퀸 전개 감점
+    const queenPos = findPiece(isWhite ? 'Q' : 'q', boardState);
+    if (queenPos) {
+        if (queenPos[0] !== backRank && developedCount < 2) {
+            const penalty = -eval_weights.Q_opening_w;
+            details['Q_opening_w'].score = penalty;
+            details['Q_opening_w'].feature = -1; // 조기 전개 발생 여부
+            totalScore += penalty;
+        }
+    }
+
+    // 3. 캐슬링 평가
+    const hasCastled = moveHistory.some(m => 
+        m.pieceMoved?.toUpperCase() === 'K' && 
+        m.specialMove === 'castling' && 
+        ((isWhite && m.pieceMoved === 'K') || (!isWhite && m.pieceMoved === 'k'))
+    );
+
+    if (hasCastled) {
+        const bonus = eval_weights.castling_w;
+        details['castling_w'].score = bonus;
+        details['castling_w'].feature = 1; // 캐슬링 성공 여부
+        totalScore += bonus;
+    } else {
+        const canCastle = isWhite ? 
+            (gameState.castlingRights.whiteKingside || gameState.castlingRights.whiteQueenside) :
+            (gameState.castlingRights.blackKingside || gameState.castlingRights.blackQueenside);
+        
+        if (!canCastle) {
+            const penalty = -eval_weights.castlingRights_w;
+            details['castlingRights_w'].score = penalty;
+            details['castlingRights_w'].feature = -1; // 권한 상실 여부
+            totalScore += penalty;
+        }
+    }
+
+    return [totalScore, details];
+};
+
+// 보드에서 특정 기물 위치 찾는 헬퍼
+const findPiece = (target, boardState) => {
+    for(let r=0; r<8; r++) {
+        for(let c=0; c<8; c++) {
+            if(boardState[r][c] === target) return [r, c];
+        }
+    }
+    return null;
+};
+///////////
+
+///////////////
+const alphaBeta = (boardState, depth, alpha, beta, maximizingPlayer, ply = 0, isCheck = false, initialDepth) => {
+
+    // 1. 현재 턴 색상 정의
+    const color = maximizingPlayer ? 'black' : 'white';
+    const nextColor = maximizingPlayer ? 'white' : 'black'; // 상대방 색상
+  
+    // 만약 최초 호출 시 initialDepth를 깜빡하고 안 보냈을 경우를 대비한 안전장치
+    if (initialDepth === undefined) initialDepth = depth;
+  
+  ///////////////
+    const currentHash = currentBoardHash.toString();
+  ////////////////
+  
+    // 1. 실제 게임 기록에서 발생한 횟수
+    const historyCount = positionHistory.get(currentHash) || 0;
+    // 2. 현재 탐색 중인 스택(경로)에서 발생한 횟수
+    const stackCount = searchStackHashes.filter(h => h === currentHash).length;
+
+    // 합이 2라면, '지금 이 노드에 도착한 것'이 3번째 발생임을 의미 (3회 반복 확정)
+    // 또는 탐색 스택에 이미 한 번이라도 있다면 (stackCount >= 1), 
+    // 이는 무한 루프(Cycle)에 빠진 것이므로 탐색 효율을 위해 즉시 무승부 처리합니다.
+    const isRepetition = (historyCount + stackCount >= 2) || (stackCount >= 1);
+    const is50MoveDraw = gameState.halfMoveClock >= 99;
+
+    if (isRepetition || is50MoveDraw) {
+        // 현재 유리한 상황이라면 무승부 점수에 페널티를 주어 회피하게 만듦
+        return [handleDrawScore(boardState, maximizingPlayer, ply), {}];
+    }
+
+    // alphaBeta 함수 상단 TT 조회 부분
+if (transpositionTable.has(currentHash)) {
+    const entry = transpositionTable.get(currentHash);
+    if (entry.depth >= depth) {
+        // [수정] entry.details 대신 {}를 반환하여 메모리 및 연산 절약
+        if (entry.flag === 'exact') return [entry.score, {}];
+        if (entry.flag === 'lowerbound' && entry.score >= beta) return [beta, {}];
+        if (entry.flag === 'upperbound' && entry.score <= alpha) return [alpha, {}];
+    }
+}
+  
+    // --- [체크 연장 로직] ---
+    let extension = 0;
+    // initialDepth를 기준으로 최대 연장 한계(보통 시작 뎁스의 2배)를 설정
+    if (isCheck && ply < initialDepth + 2) { 
+        extension = 1;
+    }
+  //////////////////////////
+    
+    const legalMoves = getLegalMoves(boardState, color);
+
+    /////////////////// (B) 체크메이트 및 스테일메이트 체크
+    if (legalMoves.length === 0) {
+        if (isInCheck(color, boardState)) {
+            const mateScore = maximizingPlayer ? -100000 + ply : 100000 - ply;
+            // [수정] 숫자 대신 배열 반환
+            return [mateScore, {}];
+        } else {
+            // [수정] 숫자 대신 배열 반환
+            return [handleDrawScore(boardState, maximizingPlayer, ply), {}];
+        }
+    }
+  /////////////////////////
+
+    // --- [평가 및 정지 조건] ---
+    if (depth <= 0 && extension === 0) {
+        const result = (MAX_QS_DEPTH === 0) 
+            ? evaluateBoard(boardState) 
+            : quiescenceSearch(boardState, alpha, beta, maximizingPlayer);
+        return [result[0], JSON.parse(JSON.stringify(result[1]))];
+    }
+  
+    searchStackHashes.push(currentHash);
+
+    // 5. 수 정렬 (성능 최적화의 핵심)
+    const sortedMoves = sortMoves(legalMoves, boardState, ply);
+
+  ////////////////////
+    let bestDetails = {};
+    let foundMove = false; // [추가] 첫 번째 이동 확인용
+  //////////////////////
+    let bestScore = maximizingPlayer ? -Infinity : Infinity;
+    let tt_flag = 'upperbound';
+
+  ///////////////////////
+    for (const move of sortedMoves) {
+        try {
+            // 1. 이동 실행 (시뮬레이션 시작)
+            makeMove(boardState, move); 
+          
+            const nextIsCheck = isInCheck(nextColor, boardState);
+
+            // 2. 재귀 호출
+            const [score, details] = alphaBeta(boardState, depth - 1 + extension, alpha, beta, !maximizingPlayer, ply + 1, nextIsCheck, initialDepth);
+
+            // 3. 최선의 점수 업데이트 (FoundMove 로직 포함)
+            if (maximizingPlayer) {
+                if (!foundMove || score > bestScore) {
+                    bestScore = score;
+                    bestDetails = details;
+                    tt_flag = 'exact';
+                    foundMove = true;
+                }
+                alpha = Math.max(alpha, bestScore);
+            } else {
+                if (!foundMove || score < bestScore) {
+                    bestScore = score;
+                    bestDetails = details;
+                    tt_flag = 'exact';
+                    foundMove = true;
+                }
+                beta = Math.min(beta, bestScore);
+            }
+        } finally { 
+            // 4. [핵심] 어떤 경우에도 반드시 보드 복구 (Unmake)
+            unmakeMove(boardState, move);
+        }
+      //////////////////////////////
+
+        if (beta <= alpha) {
+            // 킬러 무브 및 히스토리 업데이트 (기존 로직)
+            recordKillerMove(move, ply, depth, boardState);
+            tt_flag = maximizingPlayer ? 'lowerbound' : 'upperbound';
+            break;
+        }
+    }
+    searchStackHashes.pop();
+
+    ////////////////////////// 결과 저장
+    transpositionTable.set(currentHash, { depth, score: bestScore, details: {}, flag: tt_flag });
+
+    return [bestScore, bestDetails];
+  /////////////////////
+};
+
+//////////////////
+// 오직 기물 잡기(Capture)만 추출하는 함수
+const getCaptureMoves = (boardState, color) => {
+    const allMoves = getLegalMoves(boardState, color);
+    // 목적지에 기물이 있는 경우(Capture)만 필터링
+    return allMoves.filter(move => {
+        const [toRow, toCol] = move.to;
+        return boardState[toRow][toCol] !== null; 
+    });
+};
+
+// QS 전용 기물 잡기 점수 산출 (MVV-LVA)
+const getMvvLvaScore = (move, boardState) => {
+    const [toRow, toCol, special] = move.to;
+    let targetPiece = boardState[toRow][toCol];
+
+    // [추가] 앙파상인 경우 목적지는 null이지만 실제로는 폰을 잡는 것임
+    if (!targetPiece && special === 'enPassant') {
+        targetPiece = (move.piece === move.piece.toUpperCase()) ? 'p' : 'P';
+    }
+
+    if (!targetPiece) return 0;
+
+    const victimValue = pieceValues[targetPiece.toUpperCase()];
+    const aggressorValue = pieceValues[move.piece.toUpperCase()];
+
+    return (victimValue * 10) - aggressorValue;
+};
+
+const MAX_QS_DEPTH = 2; // 저사양 PC 권장: 2~4
+
+const quiescenceSearch = (boardState, alpha, beta, maximizingPlayer, qsDepth = 0) => {
+    // evaluateBoard는 [점수, 데이터]를 반환하므로 그대로 사용
+    const [standPat, standPatDetails] = evaluateBoard(boardState);
+
+    if (maximizingPlayer) {
+        if (standPat >= beta) return [beta, standPatDetails]; // 배열 반환
+        if (alpha < standPat) alpha = standPat;
+    } else {
+        if (standPat <= alpha) return [alpha, standPatDetails]; // 배열 반환
+        if (beta > standPat) beta = standPat;
+    }
+
+    if (qsDepth >= MAX_QS_DEPTH) return [standPat, standPatDetails];
+
+    const color = maximizingPlayer ? 'black' : 'white';
+    // [수정] 목적지에 기물이 있거나, 앙파상인 경우만 캡처로 간주
+    const captures = getLegalMoves(boardState, color).filter(m => {
+        return boardState[m.to[0]][m.to[1]] !== null || m.to[2] === 'enPassant';
+    });
+    captures.sort((a, b) => getMvvLvaScore(b, boardState) - getMvvLvaScore(a, boardState));
+
+    let bestDetails = standPatDetails;
+
+    for (const move of captures) {
+        const [toRow, toCol, special] = move.to;
+        let victimPiece = boardState[toRow][toCol];
+        
+        // [핵심 수정] 앙파상 시 victimPiece 강제 지정 (null 에러 방지)
+        if (!victimPiece && special === 'enPassant') {
+            victimPiece = maximizingPlayer ? 'P' : 'p'; // 상대방의 폰
+        }
+        
+        // 안전장치: 여전히 victimPiece가 없으면 에러 방지를 위해 스킵
+        if (!victimPiece) continue;
+
+        const victimValue = pieceValues[victimPiece.toUpperCase()];
+        
+        // Futility Pruning (델타 커팅)
+        if (maximizingPlayer && (standPat + victimValue + 2.0 < alpha)) continue; 
+        if (!maximizingPlayer && (standPat - victimValue - 2.0 > beta)) continue;
+
+        makeMove(boardState, move);
+        const [score, details] = quiescenceSearch(boardState, alpha, beta, !maximizingPlayer, qsDepth + 1);
+        unmakeMove(boardState, move);
+
+        if (maximizingPlayer) {
+            if (score >= beta) return [beta, details];
+            if (score > alpha) {
+                alpha = score;
+                bestDetails = details;
+            }
+        } else {
+            if (score <= alpha) return [alpha, details];
+            if (score < beta) {
+                beta = score;
+                bestDetails = details;
+            }
+        }
+    }
+
+    return [maximizingPlayer ? alpha : beta, bestDetails];
+};
+/////////////////
+
+const recordKillerMove = (move, ply, depth, boardState) => {
+    const [toRow, toCol] = move.to;
+    
+    // 1. 킬러 무브 기록: 기물을 잡는 수가 아닌 경우에만 기록
+    if (!boardState[toRow][toCol]) {
+        if (!killerMoves[ply]) killerMoves[ply] = [];
+        // 이미 목록에 있는지 확인 (중복 방지)
+        if (!killerMoves[ply].some(m => m.from[0] === move.from[0] && m.from[1] === move.from[1] && m.to[0] === move.to[0] && m.to[1] === move.to[1])) {
+            killerMoves[ply].unshift(move); // 가장 최근의 좋은 수를 맨 앞으로
+            killerMoves[ply] = killerMoves[ply].slice(0, 2); // 최대 2개만 유지
+        }
+    }
+
+    // 2. 히스토리 테이블 기록: 깊이가 깊을수록 더 높은 가중치 부여
+    const historyKey = `${move.piece}_${toRow}_${toCol}`;
+    historyTable[historyKey] = (historyTable[historyKey] || 0) + depth * depth;
+};
+
+/////////////////
+const handleDrawScore = (boardState, maximizingPlayer, ply) => {
+    const phase = getGamePhase(boardState);
+    // [수정] 리스트에서 점수만 추출
+    const [eval, _] = evaluateBoard(boardState);  // 항상 흑 기준 (Positive = Black leads)
+    
+    // 1. 현재 국면에서 무승부 혐오 지수 (Contempt Factor)
+    // 미들게임에서는 0.5점(폰 반개) 정도 손해를 보더라도 게임을 계속하게 함
+    const contempt = (phase === 'middlegame') ? 0.5 : 0.1;
+
+    // 2. 현재 수 차례인 플레이어(maximizingPlayer)가 유리한지 판단
+    // maximizingPlayer === true -> 흑의 턴
+    // maximizingPlayer === false -> 백의 턴
+    let isWinning = false;
+    let isLosing = false;
+
+    const winThreshold = (phase === 'middlegame') ? 1.5 : 0.8;
+    const lossThreshold = (phase === 'middlegame') ? -2.5 : -1.2;
+
+    if (maximizingPlayer) { // 흑의 턴
+        if (eval > winThreshold) isWinning = true;
+        if (eval < lossThreshold) isLosing = true;
+    } else { // 백의 턴
+        if (eval < -winThreshold) isWinning = true;
+        if (eval > -lossThreshold) isLosing = true;
+    }
+
+    // 3. 점수 결정
+    if (isWinning) {
+        // 내가 유리한데 무승부가 된다? -> 나에게 매우 나쁜 점수 반환
+        // 흑(Max)이면 아주 낮은 점수, 백(Min)이면 아주 높은 점수
+        return maximizingPlayer ? (-5000 + ply) : (5000 - ply);
+    }
+
+    if (isLosing) {
+        // 내가 불리한데 무승부가 된다? -> 나에게 매우 좋은 점수 반환
+        return maximizingPlayer ? (5000 - ply) : (-5000 + ply);
+    }
+
+    // 비등한 상황: 현재 턴인 사람에게 약간의 감점(Contempt)을 주어 무승부 회피 유도
+    return maximizingPlayer ? -contempt : contempt;
+};
+///////////////
+
+const simulateMove = (boardState, move) => {
+    const newBoard = boardState.map(row => [...row]);
+    const { from, to, piece } = move;
+    const [toRow, toCol, special] = to;
+
+    newBoard[toRow][toCol] = piece;
+    newBoard[from[0]][from[1]] = null;
+
+    if (special === 'enPassant') {
+        newBoard[from[0]][toCol] = null;
+    } else if (special === 'castling') {
+        const rookFromCol = toCol === 6 ? 7 : 0;
+        const rookToCol = toCol === 6 ? 5 : 3;
+        newBoard[from[0]][rookToCol] = newBoard[from[0]][rookFromCol];
+        newBoard[from[0]][rookFromCol] = null;
+    }
+    checkPromotionInternal(toRow, toCol, piece, newBoard);
+    return newBoard;
+};
+
+// 현재 게임의 권한 상태들
+let gameState = {
+    castlingRights: { 
+        whiteKingside: true, whiteQueenside: true, 
+        blackKingside: true, blackQueenside: true 
+    },
+    enPassantSquare: null, // 앙파상이 가능한 타겟 칸 (예: {row: 2, col: 3})
+    halfMoveClock: 0
+};
+
+///////////////
+function makeMove(board, move) {
+    const { from, to, piece } = move;
+    const [fR, fC] = from;
+    const [tR, tC, special] = to;
+    const isWhite = piece === piece.toUpperCase();
+    const pIdx = pieceToIndex(piece);
+
+    // --- [1] 이전 상태 백업 ---
+    move.prevHash = currentBoardHash; // 현재 해시 저장 (unmake 시 복구용)
+    move.prevCastlingRights = JSON.parse(JSON.stringify(gameState.castlingRights));
+    move.prevEnPassantSquare = gameState.enPassantSquare;
+    move.prevHalfMoveClock = gameState.halfMoveClock;
+    move.capturedPiece = board[tR][tC];
+    move.prevKingPos = isWhite ? [...kingPos.white] : [...kingPos.black];
+
+    // --- [2] 해시 업데이트: 기물 이동 시작 ---
+    // 1. 출발지에서 기물 제거 (XOR)
+    currentBoardHash ^= zobristKeys[fR][fC][pIdx];
+
+    // 2. 목적지에 기물이 있었다면 제거 (Capture 해시)
+    if (move.capturedPiece) {
+        currentBoardHash ^= zobristKeys[tR][tC][pieceToIndex(move.capturedPiece)];
+    }
+
+    // 3. 권한 및 턴 해시 제거 (변하기 전의 상태를 XOR해서 지움)
+    if (gameState.castlingRights.whiteKingside)  currentBoardHash ^= castleKeys[0];
+    if (gameState.castlingRights.whiteQueenside) currentBoardHash ^= castleKeys[1];
+    if (gameState.castlingRights.blackKingside)  currentBoardHash ^= castleKeys[2];
+    if (gameState.castlingRights.blackQueenside) currentBoardHash ^= castleKeys[3];
+    if (gameState.enPassantSquare) currentBoardHash ^= enPassantKeys[gameState.enPassantSquare.col];
+
+    // --- [3] 기물 실제 이동 및 특수 규칙 처리 ---
+    board[fR][fC] = null;
+    let finalPiece = piece;
+
+    // 승급 처리 (해시에는 승급된 기물을 넣음)
+    if (piece === 'P' && tR === 0) finalPiece = 'Q';
+    else if (piece === 'p' && tR === 7) finalPiece = 'q';
+    
+    board[tR][tC] = finalPiece;
+    currentBoardHash ^= zobristKeys[tR][tC][pieceToIndex(finalPiece)]; // 목적지에 기물 추가 (XOR)
+
+    // 앙파상 캡처 해시 처리
+    if (special === 'enPassant') {
+        const capPawn = isWhite ? 'p' : 'P';
+        currentBoardHash ^= zobristKeys[fR][tC][pieceToIndex(capPawn)]; // 옆에 있는 폰 제거
+        board[fR][tC] = null;
+    }
+
+    // 캐슬링 루크 이동 해시 처리
+    if (special === 'castling') {
+        const isKingside = tC === 6;
+        const rCol = isKingside ? 7 : 0;
+        const rDestCol = isKingside ? 5 : 3;
+        const rook = board[fR][rCol];
+        currentBoardHash ^= zobristKeys[fR][rCol][pieceToIndex(rook)];    // 루크 원래 자리 제거
+        currentBoardHash ^= zobristKeys[fR][rDestCol][pieceToIndex(rook)]; // 루크 새 자리 추가
+        board[fR][rDestCol] = board[fR][rCol];
+        board[fR][rCol] = null;
+    }
+
+    // --- [4] 상태 업데이트 (킹 위치, 캐슬링 권한, 앙파상) ---
+    if (piece === 'K') {
+        gameState.castlingRights.whiteKingside = false;
+        gameState.castlingRights.whiteQueenside = false;
+        kingPos.white = [tR, tC];
+    } else if (piece === 'k') {
+        gameState.castlingRights.blackKingside = false;
+        gameState.castlingRights.blackQueenside = false;
+        kingPos.black = [tR, tC];
+    }
+    
+    updateCastlingRights(fR, fC);
+    updateCastlingRights(tR, tC);
+
+    if (piece.toUpperCase() === 'P' && Math.abs(fR - tR) === 2) {
+        gameState.enPassantSquare = { row: (fR + tR) / 2, col: fC };
+    } else {
+        gameState.enPassantSquare = null;
+    }
+
+    // --- [5] 새로운 권한 및 턴 해시 추가 ---
+    if (gameState.castlingRights.whiteKingside)  currentBoardHash ^= castleKeys[0];
+    if (gameState.castlingRights.whiteQueenside) currentBoardHash ^= castleKeys[1];
+    if (gameState.castlingRights.blackKingside)  currentBoardHash ^= castleKeys[2];
+    if (gameState.castlingRights.blackQueenside) currentBoardHash ^= castleKeys[3];
+    if (gameState.enPassantSquare) currentBoardHash ^= enPassantKeys[gameState.enPassantSquare.col];
+
+    currentBoardHash ^= turnKey; // 턴 교체
+
+    // 50수 규칙
+    if (piece.toUpperCase() === 'P' || move.capturedPiece) gameState.halfMoveClock = 0;
+    else gameState.halfMoveClock++;
+}
+
+function unmakeMove(board, move) {
+    const [fR, fC] = move.from;
+    const [tR, tC, special] = move.to; // move.to 배열에서 special을 정확히 추출
+    const piece = move.piece;
+    const capturedPiece = move.capturedPiece;
+
+    // 1. 해시 복원
+    currentBoardHash = move.prevHash;
+
+    // 2. 기물 위치 복원 (이동했던 기물을 원래 출발지로)
+    board[fR][fC] = piece;
+    
+    // 3. 목적지에 있던 기물(잡혔던 기물) 복원
+    board[tR][tC] = capturedPiece;
+
+    const isWhite = piece === piece.toUpperCase();
+    if (piece === 'K') kingPos.white = move.prevKingPos;
+    else if (piece === 'k') kingPos.black = move.prevKingPos;
+
+    // 4. 앙파상 복원 (이제 special이 정확히 잡히므로 실행됩니다)
+    if (special === 'enPassant') {
+        // 앙파상으로 잡혔던 폰은 목적지가 아닌 옆 칸(fR, tC)에 있었습니다.
+        board[fR][tC] = isWhite ? 'p' : 'P';
+    }
+
+    // 5. 캐슬링 루크 복원
+    if (special === 'castling') {
+        const isKingside = tC === 6;
+        const rCol = isKingside ? 7 : 0;
+        const rDestCol = isKingside ? 5 : 3;
+        board[fR][rCol] = board[fR][rDestCol];
+        board[fR][rDestCol] = null;
+    }
+
+    // 6. 나머지 상태 복원
+    gameState.castlingRights = move.prevCastlingRights;
+    gameState.enPassantSquare = move.prevEnPassantSquare;
+    gameState.halfMoveClock = move.prevHalfMoveClock;
+}
+///////////////
+
+function updateCastlingRights(row, col) {
+    if (row === 7 && col === 7) gameState.castlingRights.whiteKingside = false;
+    if (row === 7 && col === 0) gameState.castlingRights.whiteQueenside = false;
+    if (row === 0 && col === 7) gameState.castlingRights.blackKingside = false;
+    if (row === 0 && col === 0) gameState.castlingRights.blackQueenside = false;
+}
+
+const aiMove = () => {
+  /////////////////////////////////////
+    if (gameOver) return;
+    if (!isSelfPlayMode && currentTurn !== aiColor) return;
+  
+    // 매 수마다 TT를 비우면 메모리가 항상 깨끗하게 유지됩니다.
+    // 이전 턴의 데이터가 없어도 이번 턴의 탐색(반복적 심화 등)에는 지장이 없습니다.
+    transpositionTable.clear();
+  ////////////////////////////////////
+    if (document.querySelector('.promotion-popup')) return;
+
+    console.log(`AI (${aiColor}) is thinking...`);
+    updateStatus(); // AI 생각 중 상태 표시
+  
+    // 탐색 시작 전 스택 초기화
+    searchStackHashes = []; 
+  
+    // 1. 혹시 모를 플레이어 선택 상태를 강제 초기화
+    clearSelection();
+    clearHighlightedMoves();
+////////////////////////////////////////////////////////
+    let bookSelection = null; // 문자열 대신 선택 정보를 담을 객체 변수
+    
+    // --- [오프닝 북 탐색] ---
+    if (useOpeningBook) {
+        let candidates = null;
+        if (moveHistory.length === 0) {
+            candidates = CHESS_OPENING_BOOK["start"];
+        } else {
+            const moveKeyHistory = moveHistory.map(m => 
+                `${m.from.row}${m.from.col}${m.to.row}${m.to.col}`
+            ).join(',');
+
+            if (CHESS_OPENING_BOOK[moveKeyHistory]) {
+                candidates = CHESS_OPENING_BOOK[moveKeyHistory];
+            }
+        }
+        
+        if (candidates) {
+            bookSelection = pickWeightedMove(candidates);
+        }
+    }
+  
+    // 북에 선택된 결과가 있으면 실행
+    if (bookSelection) {
+        const { move: bookMoveStr, weight, totalWeight } = bookSelection;
+        
+        const fR = parseInt(bookMoveStr[0]);
+        const fC = parseInt(bookMoveStr[1]);
+        const tR = parseInt(bookMoveStr[2]);
+        const tC = parseInt(bookMoveStr[3]);
+
+        const fromCell = getCell(fR, fC);
+        const toCell = getCell(tR, tC);
+
+        if (fromCell && toCell && fromCell.firstChild) {
+            const piece = fromCell.firstChild.dataset.piece;
+            const validMoves = getValidMoves(piece, fR, fC, internalBoardState);
+            const legalMove = validMoves.find(m => m[0] === tR && m[1] === tC);
+
+            if (legalMove) {
+                // --- [확률 계산 및 콘솔 로그 출력] ---
+                const probability = ((weight / totalWeight) * 100).toFixed(1);
+                console.log(
+                    `%c[Opening] ${bookMoveStr} (${probability}%)`, 
+                    "color: #2196F3; font-weight: bold;"
+                );
+                
+                selectedCell = fromCell; 
+                fromCell.classList.add('ai-highlight');
+                toCell.classList.add('ai-highlight');
+
+                movePiece(toCell, legalMove[2]);
+
+                setTimeout(() => {
+                    fromCell.classList.remove('ai-highlight');
+                    toCell.classList.remove('ai-highlight');
+                }, 800);
+
+                return; 
+            } else {
+                console.warn(`Opening book has an illegal move: ${bookMoveStr}. Falling back to search.`);
+            }
+        }
+    }
+    ///////////////////////////////////////////// --- [오프닝 북 종료] 이후 기존의 Alpha-Beta 탐색 로직 실행 ---
+
+    const legalMoves = getLegalMoves(internalBoardState, aiColor);
+
+    if (legalMoves.length === 0) {
+        console.log(`AI (${aiColor}) has no legal moves. Game should be over.`);
+        if (!gameOver) {
+            gameOver = true;
+            updateStatus();
+        }
+        return;
+    }
+    
+    let depth;
+    const phase = getGamePhase(internalBoardState);
+
+    const currentHash = computeZobristHash(internalBoardState, aiColor);
+
+
+    if (phase === 'endgame') {
+        depth = endgame_depth;
+        console.log(`AI mode: Endgame (depth=${depth})`);
+    } else {
+        depth = middlegame_depth;
+        console.log(`AI mode: Middlegame (depth=${depth})`);
+    }
+
+    // --- [새로운 상수: 탐험 확률] ---
+    const EXPLORATION_RATE = 0.0; // 20% 확률로 새로운 시도를 함
+    const isExploring = (phase === 'endgame') && (Math.random() < EXPLORATION_RATE);
+    
+    if (isExploring) {
+        console.log("%cAI Mode: Exploring (Curiosity Driven)", "color: #ff9800; font-weight: bold;");
+    }
+  
+    let bestMove = null;
+    let bestScore;
+  
+    const isAiMaximizing = (aiColor === 'black');
+    bestScore = isAiMaximizing ? -Infinity : Infinity;
+
+    // 이동별 점수를 저장할 배열
+    const moveScores = [];
+
+    ////////////////////////////// 모든 가능한 이동 평가
+    for (const move of legalMoves) {
+      try{
+        makeMove(internalBoardState, move); 
+
+        // 탐색 수행 (Teacher)
+        let [searchScore, searchDetails] = alphaBeta(internalBoardState, depth - 1, -Infinity, Infinity, !isAiMaximizing, 1, false, depth);
+
+        // 2. 학습된 가중치 반영 (엔드게임인 경우에만)
+        if (phase === 'endgame') {
+            const moveKey = `${move.from[0]}${move.from[1]}${move.to[0]}${move.to[1]}`;
+            const dbEntry = (learningDB[currentHash] && learningDB[currentHash][moveKey]) 
+                        ? learningDB[currentHash][moveKey] : null;
+        
+            // dbEntry가 [가중치, 깊이] 배열이므로 0번째 요소(가중치)를 가져옵니다.
+            let weight = dbEntry ? dbEntry[0] : 0; 
+            
+            if (isExploring) {
+                // 탐험 모드일 때는 가중치를 완전히 무시하거나, 
+                // 오히려 가중치가 낮은 수에 아주 미세한 보너스를 주어 새로운 경로를 유도합니다.
+                weight = 0; 
+                // 미세한 노이즈를 추가해 완전히 똑같은 점수들 사이에서 무작위성을 부여
+                searchScore += (Math.random() - 0.5) * 0.01; 
+            } else {
+                // 이용 모드일 때는 학습된 가중치를 적극 반영
+                searchScore += isAiMaximizing ? weight : -weight;
+            }
+        }
+
+        moveScores.push({ 
+            move, 
+            score: searchScore, 
+            searchDetails // 서치가 찾아낸 "정답" 세부 구성 
+        });
+      } catch (e) {
+        console.error("AI 탐색 중 오류 발생:", e);
+    } finally {
+        unmakeMove(internalBoardState, move); // [핵심] 어떤 경우에도 반드시 복구
+    }
+    }
+  ////////////////////////////
+  
+    // --- [수택 섹션 - 수정됨] ---
+    let chosenEntry = null; // 최적의 '객체'를 담을 변수
+
+    if (moveHistory.length < 6 && moveScores.length > 0) {
+        // 오프닝 다양성: 상위 3개 중 랜덤
+        moveScores.sort((a, b) => isAiMaximizing ? b.score - a.score : a.score - b.score);
+        const topCount = Math.min(3, moveScores.length);
+        chosenEntry = moveScores[Math.floor(Math.random() * topCount)];
+        console.log(`AI Opening Move (Random from Top ${topCount}): ${chosenEntry.move.piece} [${chosenEntry.move.from}] -> [${chosenEntry.move.to}], Score: ${chosenEntry.score.toFixed(2)}`);
+    } else if (moveScores.length > 0) {
+        // 일반 상황: 가장 점수가 높은 객체 선택
+        chosenEntry = moveScores.reduce((prev, curr) => {
+            if (!prev) return curr;
+            if (isAiMaximizing) return curr.score > prev.score ? curr : prev;
+            return curr.score < prev.score ? curr : prev;
+        }, null);
+      if(chosenEntry){
+        console.log(`AI Normal Move: ${chosenEntry.move.piece} [${chosenEntry.move.from}] -> [${chosenEntry.move.to}], Best Score: ${chosenEntry.score.toFixed(2)}`);
+      }
+    }
+
+    // --- [실행 섹션 - 수정됨] ---
+    if (chosenEntry) {
+        // 여기서 해체하면 chosenEntry가 {move, score, searchDetails}를 다 가지고 있으므로 안전합니다.
+        const { move, score, searchDetails } = chosenEntry; 
+        
+        // 1. 선택된 수에 대해서만 딱 한 번 정적 평가 수행
+        makeMove(internalBoardState, move);
+        const [sScore, sDetails] = evaluateBoard(internalBoardState);
+        
+        aiPendingStaticEval = { score: sScore, details: sDetails };
+        aiPendingSearchScore = score;
+        aiPendingSearchDetails = searchDetails;
+      
+        unmakeMove(internalBoardState, move);
+
+        // 2. 실제 이동 수행
+        const fromCell = getCell(move.from[0], move.from[1]);
+        const toCell = getCell(move.to[0], move.to[1]);
+
+        if (fromCell && toCell && fromCell.firstChild) {
+            const currentHighlightDuration = isSelfPlayMode ? 100 : 1000;
+            fromCell.classList.add('ai-highlight');
+            toCell.classList.add('ai-highlight');
+
+            selectedCell = fromCell;
+            movePiece(toCell, move.to[2]);
+
+            setTimeout(() => {
+                const currentFromCell = getCell(move.from[0], move.from[1]);
+                const currentToCell = getCell(move.to[0], move.to[1]);
+                if (currentFromCell) currentFromCell.classList.remove('ai-highlight');
+                if (currentToCell) currentToCell.classList.remove('ai-highlight');
+            }, currentHighlightDuration);
+        }
+    } else {
+        console.error(`AI (${aiColor}) could not determine a move.`);
+        switchTurn();
+    }
+};
+
+/////////////////////////
+const CHESS_OPENING_BOOK = {
+    // [0,0]=a8, [7,7]=h1 기준 좌표
+    // 형식: "히스토리키": [ ["이동좌표", 채택률], ... ]
+
+    // [백의 첫 수 통계]
+    "start": [
+        ["6444", 50.3], // 1. e4
+        ["6343", 31.8], // 1. d4
+        ["7655", 7.8],  // 1. Nf3
+        ["6242", 7.0],  // 1. c4
+        ["6656", 0.7],  // 1. g3
+        ["6151", 0.5]   // 1. b3
+    ],
+
+    // ==========================================
+    // KING'S PAWN (1. e4)
+    // ==========================================
+    "6444": [
+        ["1434", 40.0], // 1... e5
+        ["1232", 35.0], // 1... c5 (Sicilian)
+        ["1424", 10.0], // 1... e6 (French)
+        ["1222", 10.0], // 1... c6 (Caro-Kann)
+        ["1333", 5.0]   // 1... d5 (Scandinavian)
+    ],
+
+    // --- Ruy Lopez (2. Nf3 Nc6 3. Bb5) ---
+    "6444,1434": [["7655", 100]], 
+    "6444,1434,7655": [["0122", 80], ["0625", 20]],
+    "6444,1434,7655,0122": [
+        ["7531", 70.0], // 3. Bb5 (Ruy Lopez)
+        ["7542", 25.0], // 3. Bc4 (Italian)
+        ["6343", 5.0]   // 3. d4 (Scotch)
+    ],
+    "6444,1434,7655,0122,7531": [
+        ["1020", 85.0], // 3... a6
+        ["0625", 15.0]  // 3... Nf6 (Berlin)
+    ],
+
+    // --- Sicilian Defense (Najdorf Line) ---
+    "6444,1232,7655": [["1323", 90], ["0122", 10]],
+    "6444,1232,7655,1323": [["6343", 100]],
+    "6444,1232,7655,1323,6343": [["3243", 100]],
+    "6444,1232,7655,1323,6343,3243": [["5543", 100]],
+    "6444,1232,7655,1323,6343,3243,5543": [["0625", 95], ["1424", 5]],
+    "6444,1232,7655,1323,6343,3243,5543,0625": [["7152", 100]],
+    "6444,1232,7655,1323,6343,3243,5543,0625,7152": [
+        ["1020", 70.0], // 6... a6 (Najdorf)
+        ["1626", 20.0], // 6... g6 (Dragon)
+        ["1424", 10.0]  // 6... e6 (Scheveningen)
+    ],
+
+    // ==========================================
+    // QUEEN'S PAWN (1. d4)
+    // ==========================================
+    "6343": [
+        ["0625", 55.0], // 1... Nf6
+        ["1333", 40.0], // 1... d5
+        ["1424", 5.0]   // 1... e6
+    ],
+
+    // --- Queen's Gambit Declined ---
+    "6343,1333": [["6242", 95], ["7655", 5]],
+    "6343,1333,6242": [
+        ["1424", 50.0], // 2... e6 (Declined)
+        ["1222", 35.0], // 2... c6 (Slav)
+        ["3342", 15.0]  // 2... dxc4 (Accepted)
+    ],
+    "6343,1333,6242,1424": [["7152", 60], ["7655", 40]],
+
+    // --- King's Indian Defense ---
+    "6343,0625,6242": [["1626", 100]],
+    "6343,0625,6242,1626": [["7152", 80], ["7655", 20]],
+};
+
+/**
+ * 가중치 기반으로 수를 선택하고 관련 정보를 함께 반환합니다.
+ */
+const pickWeightedMove = (candidates) => {
+    if (!candidates || candidates.length === 0) return null;
+
+    // 1. 전체 가중치 합산
+    const totalWeight = candidates.reduce((sum, c) => sum + c[1], 0);
+    
+    // 2. 난수 생성 및 선택
+    let r = Math.random() * totalWeight;
+    for (const [move, weight] of candidates) {
+        if (r < weight) {
+            return { move, weight, totalWeight }; // 객체 형태로 반환
+        }
+        r -= weight;
+    }
+    
+    return { move: candidates[0][0], weight: candidates[0][1], totalWeight };
+};
+
+///////////////////////////////
+
+// --- 👑 Self-Learning DB 설정 ---
+const INITIAL_KNOWLEDGE = {
+    /* 여기에 나중에 추출한 데이터를 붙여넣으시면 됩니다 */
+};
+
+const mergeLearningDB = (base, update) => {
+    // 1. 빈 객체에서 시작 (복사 과정을 생략하여 속도 향상)
+    const merged = {};
+
+    // 2. 기초 지식 먼저 삽입
+    for (const hash in base) {
+        merged[hash] = { ...base[hash] };
+    }
+
+    // 3. 로컬 스토리지 데이터로 덮어쓰기
+    for (const hash in update) {
+        if (!merged[hash]) {
+            merged[hash] = { ...update[hash] };
+        } else {
+            // 이미 있는 국면이면 수(moveKey)만 병합
+            Object.assign(merged[hash], update[hash]);
+        }
+    }
+    return merged;
+};
+
+// [중요] 페이지 로드 시 단 한 번 실행
+// 로컬 스토리지 데이터 가져오기
+const savedData = JSON.parse(localStorage.getItem('chess_learning_endgame_db')) || {};
+// INITIAL_KNOWLEDGE와 로컬 데이터를 합쳐서 메모리에 로드
+let learningDB = mergeLearningDB(INITIAL_KNOWLEDGE, savedData);
+
+console.log(`[DB Load] INITIAL: ${Object.keys(INITIAL_KNOWLEDGE).length}개 국면, Local: ${Object.keys(savedData).length}개 국면 병합 완료.`);
+
+let isStorageFullAlerted = false; // 알람이 이미 떴는지 확인하는 플래그
+
+const saveLearningDB = () => {
+    try {
+        const dataString = JSON.stringify(learningDB);
+        localStorage.setItem('chess_learning_endgame_db', dataString);
+    } catch (e) {
+        // 용량 초과 에러인지 확인
+        if (e.name === 'QuotaExceededError' || 
+            e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || 
+            e.code === 22) { 
+            
+            console.error("LocalStorage 용량 초과 발생!");
+
+            // 이번 접속 중에 아직 알람을 안 띄웠다면 알람 표시
+            if (!isStorageFullAlerted) {
+                alert("⚠️ 브라우저 저장 공간이 가득 찼습니다!\n\nAI의 새로운 학습 데이터를 더 이상 저장할 수 없습니다.\n'데이터 추출' 버튼을 눌러 데이터를 백업한 뒤,\nINITIAL_KNOWLEDGE를 업데이트하고 '데이터 초기화'를 해주세요.");
+                isStorageFullAlerted = true; // 중복 알람 방지
+            }
+        } else {
+            // 다른 에러일 경우 콘솔에 기록
+            console.error("DB 저장 중 예상치 못한 오류 발생:", e);
+        }
+    }
+};
+
+const computeZobristHash = (boardState, turn) => {
+  ////////////
+    let hash = 0n;
+  ////////////
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            const piece = boardState[row][col];
+            if (piece) {
+                const index = pieceToIndex(piece);
+                if (index !== -1) {
+                    hash ^= zobristKeys[row][col][index];
+                }
+            }
+        }
+    }
+    if (turn === 'black') hash ^= turnKey; // 턴 정보 포함
+  
+  /////////////////
+    // 3. 앙파상 권한 (추가)
+    // 앙파상 타겟 칸이 있다는 것은 방금 폰이 2칸 전진했음을 의미
+    if (gameState.enPassantSquare) {
+        hash ^= enPassantKeys[gameState.enPassantSquare.col];
+    }
+
+    // 4. 캐슬링 권한 (추가)
+    if (gameState.castlingRights.whiteKingside)  hash ^= castleKeys[0];
+    if (gameState.castlingRights.whiteQueenside) hash ^= castleKeys[1];
+    if (gameState.castlingRights.blackKingside)  hash ^= castleKeys[2];
+    if (gameState.castlingRights.blackQueenside) hash ^= castleKeys[3];
+  ////////////////
+  
+    return hash.toString(); // 객체 키로 사용하기 위해 문자열 반환
+};
+
+const getDBTotalCount = (db) => {
+    let count = 0;
+    for (const hash in db) {
+        // 각 해시(국면) 아래에 매핑된 moveKey(이동)들의 개수를 합산
+        count += Object.keys(db[hash]).length;
+    }
+    return count;
+};
+
+/////////////////
+function tuneWeights(moveEntry, moveIndex) {
+    const teacher = moveEntry.searchDetails; 
+    const student = moveEntry.staticDetails; 
+    
+    if (!teacher || !student || Object.keys(teacher).length === 0) return;
+
+    // 일반 가중치와 스케일링 파라미터의 학습 속도를 다르게 가져갈 수 있습니다.
+    const learningRate = 0.005; 
+    const scaleParamStep = 0.001; // 스케일링 파라미터용 고정 보폭 (조금 더 신중하게)
+    
+    let changeLog = [];
+
+    for (let key in student) {
+        if (!teacher[key]) continue;
+
+        // [1] 오차 계산 (Teacher - Student)
+        const rawError = teacher[key].score - student[key].score;
+        // [보수적 에러 캡핑] 
+        // 에러가 아무리 커도 2.0(폰 2개) 수준으로 제한하여 '포지션 지식'이 파괴되는 것을 막음
+        const error = Math.max(-2.0, Math.min(2.0, rawError));
+        if (Math.abs(error) < 0.0001) continue;
+
+        const featureVal = student[key].feature;
+        if (featureVal === 0) continue;
+
+        // --- 튜닝 로직 분기 ---
+
+        // [A] 스케일링 파라미터 튜닝 (에러 방향 * 특징 방향 * 고정 보폭)
+        if (key.startsWith('scalingParams_')) {
+            const paramName = key.split('_')[1];
+            if (eval_weights.scalingParams && eval_weights.scalingParams.hasOwnProperty(paramName)) {
+                
+                // 사용자님 요청 반영: 에러와 특징 모두 '부호(방향)'만 취함
+                const errorDirection = Math.sign(error);
+                const featureDirection = Math.sign(featureVal);
+                
+                // 업데이트량 = 에러방향 * 특징방향 * 고정보폭
+                let updateAmount = errorDirection * featureDirection * scaleParamStep;
+                
+                const oldWeight = eval_weights.scalingParams[paramName];
+                eval_weights.scalingParams[paramName] += updateAmount;
+
+                // 안전 범위 (0.1 ~ 5.0)
+                let minBound = (paramName === 'globalPositionalWeight') ? 0.1 : 0.0;
+                eval_weights.scalingParams[paramName] = Math.max(minBound, Math.min(5.0, eval_weights.scalingParams[paramName]));
+
+                if (Math.abs(updateAmount) > 0) {
+                    changeLog.push(`[Strategy] ${paramName}: ${oldWeight.toFixed(5)} -> ${eval_weights.scalingParams[paramName].toFixed(5)} (Dir Update)`);
+                }
+            }
+        }
+        // [B] 일반 가중치 튜닝 (기존 로직 유지: 에러 크기 반영)
+        else {
+            const featureDirection = Math.sign(featureVal);
+            let updateAmount = error * featureDirection * learningRate;
+            let oldWeight = 0;
+
+            if (key.startsWith('mobility_')) {
+                const piece = key.split('_')[1];
+                oldWeight = eval_weights.mobility[piece];
+                eval_weights.mobility[piece] = Math.max(0.001, Math.min(2.0, eval_weights.mobility[piece] + updateAmount));
+                if (Math.abs(updateAmount) > 0.00001) changeLog.push(`mobility_${piece}: ${oldWeight.toFixed(5)} -> ${eval_weights.mobility[piece].toFixed(5)}`);
+            }
+            else if (key.startsWith('passedPawnRankBonus_')) {
+                const rank = parseInt(key.split('_')[1]);
+                oldWeight = eval_weights.passedPawnRankBonus[rank];
+                eval_weights.passedPawnRankBonus[rank] = Math.max(0.0, Math.min(20.0, eval_weights.passedPawnRankBonus[rank] + updateAmount));
+                if (Math.abs(updateAmount) > 0.00001) changeLog.push(`passedRank_${rank}: ${oldWeight.toFixed(5)} -> ${eval_weights.passedPawnRankBonus[rank].toFixed(5)}`);
+            }
+            else if (typeof eval_weights[key] === 'number') {
+                oldWeight = eval_weights[key];
+                eval_weights[key] += updateAmount;
+                eval_weights[key] = Math.max(0.0, Math.min(15.0, eval_weights[key]));
+                if (Math.abs(updateAmount) > 0.00001) changeLog.push(`${key}: ${oldWeight.toFixed(5)} -> ${eval_weights[key].toFixed(5)}`);
+            }
+        }
+    }
+
+    if (changeLog.length > 0) {
+        console.log(`%c[Fine-Tuning Move ${moveIndex}] %cUpdate Log:`, "color: #ffeb3b; font-weight: bold;", "color: white;");
+        changeLog.forEach(log => console.log(`  └ %c${log}`, "color: #8bc34a;"));
+    }
+}
+////////////////
+
+const recordGameResult = (winner) => {
+  ///////////////////////////
+    // --- [전적 기록 추가] ---
+    if (isSelfPlayMode) {
+        selfPlayResults.totalCompleted++;
+        if (winner === 'White') selfPlayResults.white++;
+        else if (winner === 'Black') selfPlayResults.black++;
+        else selfPlayResults.draw++;
+        
+        updateScoreboardUI(); // UI 갱신
+    }
+  
+    // --- [Self-Tuning 프로세스] ---
+    if (isSelfTuningEnabled) {
+        console.log("%c[Tuning] 파인 튜닝 프로세스 시작...", "color: #2196f3; font-weight: bold;");
+        
+        if (moveHistory.length > 0) {
+            moveHistory.forEach((move, idx) => tuneWeights(move, idx + 1));
+            localStorage.setItem('chess_eval_weights', JSON.stringify(eval_weights));
+            console.log("%c[Tuning] 모든 가중치가 업데이트되고 저장되었습니다.", "color: #4caf50; font-weight: bold;");
+        } else {
+            console.log("[Tuning] 기록된 수순이 없어 튜닝을 생략합니다.");
+        }
+    } else {
+        console.log("%c[Tuning] Self-Tuning 기능이 비활성화 상태입니다. (가중치 고정)", "color: #9e9e9e;");
+    }
+  //////////////////////////
+  //if문으로 감싸기/////////////////////
+  if (isEndgameDBEnabled) {
+    const countBefore = getDBTotalCount(learningDB);
+    const endgameMoves = moveHistory.filter(m => m.phaseAtMove === 'endgame' && m.boardHash);
+    
+    if (endgameMoves.length < 2) {
+        console.log("No endgame moves to learn.");
+        return;
+    }
+  
+    let blunderCount = 0;
+    let brilliantCount = 0;
+
+    const isAiWin = (winner === aiColor);
+    const isDraw = (winner === 'draw');
+
+    console.log(`[Learning] Processing ${endgameMoves.length} endgame moves...`);
+
+    // 가중치 조절 계수 (이 값을 조절하여 학습 속도를 변경하세요)
+    const LEARNING_RATE = 0.5; 
+    const MAX_SINGLE_WEIGHT = 1.5; // 한 번의 수로 줄 수 있는 최대 가중치 변화량
+  
+  
+    endgameMoves.forEach((move, i) => {
+      
+            const currentScore = move.evalScore;
+            const prevScore = endgameMoves[i - 1].evalScore;
+          
+          
+            // AI 관점에서의 실제 이득 계산
+            const aiDelta = (aiColor === 'black') ? (currentScore - prevScore) : (prevScore - currentScore);
+            const delta = Math.abs(aiDelta);
+
+            console.log(`Move ${i} [Search Score]: ${prevScore.toFixed(2)} -> ${currentScore.toFixed(2)} | Delta: ${aiDelta.toFixed(2)}`);
+
+            
+            
+          // 일반적인 상황(1000 이하) 또는 체크메이트 상황(9000 이상)만 학습
+            if (delta < 1000) {
+              if (aiDelta < -1.0) { // 탐색 점수 기반이므로 임계값을 조금 더 엄격하게 잡아도 됨
+                if (move.aiColor === aiColor) {
+                    blunderCount++;
+                  //////////////////////////applyWeightToDB에 move.searchDepth추가
+                    applyWeightToDB(endgameMoves[i], -LEARNING_RATE*delta, move.searchDepth); // 내 수읽기가 틀렸으므로 이전 수에 강한 페널티
+                  ////////////////////////////
+                    console.log(`%c   -> Blunder at ${i} penalized.`, "color: #ff4d4d;");
+
+                } else {
+                    brilliantCount++;
+                    applyWeightToDB(move, LEARNING_RATE*delta, move.searchDepth); // 상대방이 내 수읽기를 뛰어넘었으므로 상대 수에 강한 가점
+                    console.log(`%c   -> Brilliant move at ${i} rewarded.`, "color: #1a75ff;");
+                    blunderCount++;
+                    applyWeightToDB(endgameMoves[i - 1], -LEARNING_RATE*(delta/2), move.searchDepth);
+                    console.log(`%c   -> Blunder at ${i-1} penalized.`, "color: #ff4d4d;");
+                }
+              }
+            }
+          if(delta > 50000){
+            if (aiDelta < 0) { // 탐색 점수 기반이므로 임계값을 조금 더 엄격하게 잡아도 됨
+                if (move.aiColor === aiColor) {
+                    blunderCount++;
+                    applyWeightToDB(endgameMoves[i], -MAX_SINGLE_WEIGHT, move.searchDepth); // 내 수읽기가 틀렸으므로 이전 수에 강한 페널티
+                    console.log(`%c   -> Blunder at ${i} penalized.`, "color: #ff4d4d;");
+
+                } else {
+                    brilliantCount++;
+                    applyWeightToDB(move, MAX_SINGLE_WEIGHT, move.searchDepth); // 상대방이 내 수읽기를 뛰어넘었으므로 상대 수에 강한 가점
+                    console.log(`%c   -> Brilliant move at ${i} rewarded.`, "color: #1a75ff;");
+                    blunderCount++;
+                    applyWeightToDB(endgameMoves[i - 1], -MAX_SINGLE_WEIGHT, move.searchDepth);
+                    console.log(`%c   -> Blunder at ${i-1} penalized.`, "color: #ff4d4d;");
+                }
+              }
+          }
+      //2. 최종 결과에 따른 보상 (게임 종료 시점에 한 번 더 루프)
+        if (winner === aiColor) {
+            applyWeightToDB(move, 0.1, move.searchDepth); // 승리한 게임의 모든 수에 미세한 보상
+        } else if (winner !== 'draw') {
+            applyWeightToDB(move, -0.1, move.searchDepth); // 패배한 게임의 모든 수에 미세한 페널티
+        }
+    });
+
+    // 데이터 저장
+    saveLearningDB();
+
+    const countAfter = getDBTotalCount(learningDB);
+    const newScenarios = countAfter - countBefore;
+  
+    // --- 개선된 결과 리포트 출력 ---
+    console.log(`%c[Learning Report]`, "color: #4CAF50; font-weight: bold; font-size: 12px;");
+    console.log(`- Result: ${winner.toUpperCase()} wins`);
+    console.log(`- %cBlunders identified: ${blunderCount}`, "color: #ff4d4d;");
+    console.log(`- %cBrilliant moves identified: ${brilliantCount}`, "color: #1a75ff;");
+    console.log(`- New scenarios added to DB: ${newScenarios}`);
+    console.log(`- Total DB knowledge: ${countAfter} scenarios`);
+    console.log(`-----------------------------------------`);
+  } else {
+        console.log("%c   -> [DB] Endgame DB 저장이 비활성화되어 있습니다. (가중치만 튜닝됨)", "color: #ff9800;");
+  }
+  //if문으로 감싸기//////////////////////////////////
+};
+
+///////////////
+const applyWeightToDB = (moveEntry, weight, depth) => {
+    const moveKey = `${moveEntry.from.row}${moveEntry.from.col}${moveEntry.to.row}${moveEntry.to.col}`;
+    
+    // 1. 원본 국면 기록
+    updateDB(moveEntry.boardHash, moveKey, weight, depth);
+
+    // 2. 대칭 국면 기록
+    if (moveEntry.mirroredHash) {
+        const mirroredKey = getMirroredMoveKey(moveKey);
+        updateDB(moveEntry.mirroredHash, mirroredKey, weight, depth);
+    }
+};
+//////////////////
+
+//////////////////
+const updateDB = (hash, moveKey, weight, depth) => {
+    if (!learningDB[hash]) learningDB[hash] = {};
+    
+    // 기존 데이터가 있는지 확인
+    const existing = learningDB[hash][moveKey]; // 예: [2.5, 4] (가중치, 깊이)
+
+    if (existing) {
+        let [oldWeight, oldDepth] = existing;
+        
+        // [신뢰도 로직] 새 데이터의 깊이가 더 깊다면 더 많이 반영함
+        if (depth > oldDepth) {
+            // 깊이가 더 깊은 데이터로 갱신하거나 높은 비중으로 합산
+            oldWeight = (oldWeight + weight * 1.5) / 2; 
+            oldDepth = depth;
+        } else {
+            // 깊이가 낮거나 같다면 미세하게만 반영
+            oldWeight += weight * 0.5;
+        }
+        
+        learningDB[hash][moveKey] = [
+            Math.max(-10, Math.min(10, Math.round(oldWeight * 100) / 100)),
+            oldDepth
+        ];
+    } else {
+        // 데이터가 없으면 새로 생성
+        learningDB[hash][moveKey] = [Math.round(weight * 100) / 100, depth];
+    }
+};
+/////////////////
+
+
+const getMirroredBoard = (boardState) => {
+    return boardState.map(row => [...row].reverse());
+};
+
+const getMirroredMoveKey = (moveKey) => {
+    // moveKey 예시: "6444" (fromRow, fromCol, toRow, toCol)
+    const fromRow = moveKey[0];
+    const fromCol = 7 - parseInt(moveKey[1]);
+    const toRow = moveKey[2];
+    const toCol = 7 - parseInt(moveKey[3]);
+    return `${fromRow}${fromCol}${toRow}${toCol}`;
+};
+
+//로컬 스토리지의 학습 데이터를 초기화하는 함수
+function clearAIDatabase() {
+    if (confirm("브라우저의 학습 데이터를 삭제하시겠습니까? (코드의 기초 지식은 유지됩니다.)")) {
+        localStorage.removeItem('chess_learning_endgame_db');
+        
+        // 중요: 메모리 상의 DB도 기초 지식으로만 리셋
+        learningDB = JSON.parse(JSON.stringify(INITIAL_KNOWLEDGE));
+        
+        console.log("로컬 스토리지가 비워졌습니다. AI가 INITIAL_KNOWLEDGE 상태로 돌아갔습니다.");
+        alert("로컬 데이터가 초기화되었습니다.");
+    }
+}
+
+// 학습된 데이터를 메모장용 텍스트로 내보내기
+function exportLearningDB() {
+    // 현재 메모리의 learningDB(기초+학습)를 모두 추출
+    const dataStr = JSON.stringify(learningDB, null, 4); 
+    const blob = new Blob([dataStr], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const now = new Date();
+    const fileName = `chess_ai_full_db_${now.getMonth()+1}${now.getDate()}.txt`;
+    
+    link.href = url;
+    link.download = fileName;
+    link.click();
+    URL.revokeObjectURL(url);
+    console.log("전체 DB가 추출되었습니다. INITIAL_KNOWLEDGE 업데이트에 사용하세요.");
+}
+
+// 모드 전환 이벤트 리스너
+aiMatchBtn.addEventListener('click', () => {
+  //////////////
+    if (isSelfPlayMode) stopSelfPlay(); // 자가 대국 중이면 중지 및 전적판 숨기기
+  ////////////
+    gameMode = 'ai';
+    aiMatchBtn.style.backgroundColor = '#779556';
+    aiMatchBtn.style.color = 'white';
+    pvpMatchBtn.style.backgroundColor = '';
+    pvpMatchBtn.style.color = '';
+    updateClockVisibility();
+    resetGame();
+});
+
+pvpMatchBtn.addEventListener('click', () => {
+  //////////////
+    if (isSelfPlayMode) stopSelfPlay(); // 자가 대국 중이면 중지 및 전적판 숨기기
+  //////////////
+    gameMode = 'pvp';
+    pvpMatchBtn.style.backgroundColor = '#779556';
+    pvpMatchBtn.style.color = 'white';
+    aiMatchBtn.style.backgroundColor = '';
+    aiMatchBtn.style.color = '';
+    updateClockVisibility();
+    resetGame();
+});
+
+// --- Event Listener ---
+resetButton.addEventListener('click', resetGame);
+
+// --- Initial Game Setup ---
+resetGame(); // Start the first game
+
+// 설정 관련 DOM 요소
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsModal = document.getElementById('settingsModal');
+const closeSettings = document.getElementById('closeSettings');
+
+const midDepthRange = document.getElementById('midDepthRange');
+const endDepthRange = document.getElementById('endDepthRange');
+const midDepthVal = document.getElementById('midDepthVal');
+const endDepthVal = document.getElementById('endDepthVal');
+const drawWarningCheck = document.getElementById('drawWarningCheck');
+
+// 설정창 열기
+settingsBtn.onclick = () => {
+    settingsModal.style.display = "block";
+    // 설정창이 열리면 타이머를 일시 정지합니다.
+    if (timers.interval) {
+        clearInterval(timers.interval);
+        console.log("Timer paused for settings.");
+    }
+};
+
+// 설정창 닫기 (적용 및 닫기 버튼)
+closeSettings.onclick = () => {
+    settingsModal.style.display = "none";
+    // PvP 모드이고 게임이 진행 중이라면 타이머를 다시 시작합니다.
+    if (!gameOver && gameMode === 'pvp' && timers.mode !== 'none') {
+        startTimer();
+        console.log("Timer resumed.");
+    }
+};
+
+// 3. 미들게임 Depth 조절
+midDepthRange.oninput = function() {
+    middlegame_depth = parseInt(this.value);
+    midDepthVal.innerText = this.value;
+    console.log(`Middlegame Depth changed to: ${middlegame_depth}`);
+};
+
+// 4. 엔드게임 Depth 조절
+endDepthRange.oninput = function() {
+    endgame_depth = parseInt(this.value);
+    endDepthVal.innerText = this.value;
+    console.log(`Endgame Depth changed to: ${endgame_depth}`);
+};
+
+// 5. 무승부 경고 토글
+drawWarningCheck.onchange = function() {
+    showDrawWarnings = this.checked;
+    console.log(`Show Draw Warnings: ${showDrawWarnings}`);
+    // 현재 하이라이트된 칸이 있다면 즉시 반영하기 위해 호출 가능
+    clearHighlightedMoves(); 
+};
+
+// 모달 외부 클릭 시 닫기 로직에도 추가
+window.onclick = (event) => {
+    if (event.target == settingsModal) {
+        settingsModal.style.display = "none";
+        if (!gameOver && gameMode === 'pvp' && timers.mode !== 'none') {
+            startTimer();
+        }
+    }
+};
+
+// --- 설정창 로직 ---
+const timeModeSelect = document.getElementById('timeControlMode');
+const timeSettings = document.getElementById('timeSettings');
+const baseTimeRange = document.getElementById('baseTimeRange');
+const incTimeRange = document.getElementById('incTimeRange');
+
+// 기준 시간(분) 슬라이더 로직
+baseTimeRange.oninput = function() {
+    const newBaseMins = parseInt(this.value);
+    const newBaseSecs = newBaseMins * 60;
+    
+    // 1. 기존 기준 시간과 새 기준 시간의 차이 계산
+    const timeDifference = newBaseSecs - timers.base;
+    
+    // 2. 현재 남은 시간(white, black)에 차이만큼 적용
+    // (남은 시간이 0 이하가 되지 않도록 Math.max 사용)
+    timers.white = Math.max(1, timers.white + timeDifference);
+    timers.black = Math.max(1, timers.black + timeDifference);
+    
+    // 3. 기준값 업데이트
+    timers.base = newBaseSecs;
+    document.getElementById('baseTimeVal').innerText = newBaseMins;
+    
+    // 4. 시계 즉시 갱신
+    updateClockDisplay();
+    console.log(`Time updated: Added ${timeDifference}s to both players.`);
+};
+
+// 추가/유예 시간(초) 슬라이더 로직
+incTimeRange.oninput = function() {
+    timers.increment = parseInt(this.value); // 문자열 방지
+    document.getElementById('incTimeVal').innerText = this.value;
+};
+
+// 시간 모드(Select box) 변경 시
+timeModeSelect.onchange = function() {
+    timers.mode = this.value;
+    
+    // 1. UI 표시 설정
+    timeSettings.style.display = timers.mode === 'none' ? 'none' : 'block';
+    updateClockVisibility(); 
+    
+    // 2. 핵심: 모드가 바뀌면 시간을 즉시 초기화
+    resetTimers();
+    
+    console.log(`Time mode changed to ${timers.mode}. Clocks reset to ${timers.base}s.`);
+};
+
+// --- 시계 작동 로직 ---
+
+function updateClockDisplay() {
+    const format = (s) => {
+        const mins = Math.floor(s / 60);
+        const secs = s % 60;
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    };
+    
+    document.getElementById('whiteClock').innerText = `White: ${format(timers.white)}`;
+    document.getElementById('blackClock').innerText = `Black: ${format(timers.black)}`;
+    
+    // 활성화 표시
+    document.getElementById('whiteClock').classList.toggle('active', currentTurn === 'white');
+    document.getElementById('blackClock').classList.toggle('active', currentTurn === 'black');
+}
+
+// 1. 타이머 시작 및 딜레이 처리
+function startTimer() {
+    // AI 모드이거나 시간 제한 없음, 또는 게임 종료 시 타이머 중지
+    if (gameMode === 'ai' || timers.mode === 'none' || gameOver) {
+        if (timers.interval) clearInterval(timers.interval);
+        return;
+    }
+
+    clearInterval(timers.interval); // 기존 인터벌 제거
+
+    // [중요] 딜레이 모드라면 턴이 시작될 때마다 유예 시간을 초기화합니다.
+    if (timers.mode === 'delay') {
+        timers.currentDelay = timers.increment; 
+    }
+
+    timers.interval = setInterval(() => {
+        // [딜레이 로직] 유예 시간이 남아있다면 본 시간을 깎지 않고 유예 시간만 줄임
+        if (timers.mode === 'delay' && timers.currentDelay > 0) {
+            timers.currentDelay--;
+            // 유예 시간이 흐르는 동안은 시계 UI에 변화가 없으므로 업데이트를 생략하거나 
+            // 시계 옆에 'Delay' 표시를 해줄 수 있습니다.
+            return; 
+        }
+
+        // [본 시간 차감 로직]
+        if (currentTurn === 'white') {
+            timers.white--;
+            if (timers.white <= 0) endGameByTime('white');
+        } else {
+            timers.black--;
+            if (timers.black <= 0) endGameByTime('black');
+        }
+        updateClockDisplay();
+    }, 1000);
+}
+
+// 2. 턴 교체 시 시간 보너스 처리 (피셔)
+function handleTimerOnTurnSwitch(previousTurnColor) {
+    if (timers.mode === 'none' || gameMode === 'ai') return;
+
+    // [피셔 로직] 수를 완료한 사람에게 설정된 초만큼 보너스 추가
+    if (timers.mode === 'fisher') {
+        timers[previousTurnColor] += timers.increment;
+    }
+
+    // 다음 사람을 위해 타이머를 새로 시작 (딜레이 초기화 포함)
+    startTimer();
+    updateClockDisplay();
+}
+
+function endGameByTime(loserColor) {
+    clearInterval(timers.interval);
+    gameOver = true;
+    const winner = loserColor === 'white' ? 'Black' : 'White';
+    statusDisplay.textContent = `Time Out! ${winner} wins!`;
+    alert(`${winner} wins on time!`);
+}
+
+// resetGame 함수 안에 추가
+function resetTimers() {
+    clearInterval(timers.interval); // 현재 돌아가는 타이머 중지
+    timers.white = timers.base;    // 현재 시간을 설정된 기본 시간으로 초기화
+    timers.black = timers.base;
+    timers.currentDelay = 0;       // 딜레이 기록 초기화
+    
+    updateClockDisplay();          // 시계 UI 업데이트
+    
+    // PvP 모드이고 시간 제한이 있는 상태라면 다시 타이머 시작
+    if (!gameOver && gameMode === 'pvp' && timers.mode !== 'none') {
+        startTimer();
+    }
+}
+
+// 시계 표시 업데이트 함수
+function updateClockVisibility() {
+    const clockContainer = document.querySelector('.chess-clocks');
+    if (!clockContainer) return;
+
+    if (gameMode === 'ai' || timers.mode === 'none') {
+        clockContainer.style.display = 'none';
+        clearInterval(timers.interval); // AI 모드면 타이머 중지
+    } else {
+        clockContainer.style.display = 'flex';
+        // PvP 모드고 시간 제한이 설정되어 있다면 타이머 시작 고려
+        if (!gameOver) startTimer(); 
+    }
+}
+
+const boardThemes = {
+    forest: { dark: '#779556', light: '#ebecd0' },
+    ocean: { dark: '#4b7399', light: '#eae9d2' },
+    tournament: { dark: '#b58863', light: '#f0d9b5' },
+    midnight: { dark: '#51504e', light: '#aeab9d' },
+    vintage: { dark: '#8b4513', light: '#d2b48c' }
+};
+
+const boardThemeSelect = document.getElementById('boardThemeSelect');
+
+boardThemeSelect.onchange = function() {
+    const theme = boardThemes[this.value];
+    
+    // CSS 변수 교체
+    document.documentElement.style.setProperty('--dark-color', theme.dark);
+    document.documentElement.style.setProperty('--light-color', theme.light);
+    
+    // 로컬 스토리지에 저장 (다음 접속 시 유지)
+    localStorage.setItem('chess_theme', this.value);
+    
+    console.log(`Board theme changed to: ${this.value}`);
+};
+
+// 페이지 로드 시 저장된 테마 불러오기
+window.addEventListener('DOMContentLoaded', () => {
+    const savedTheme = localStorage.getItem('chess_theme') || 'forest';
+    boardThemeSelect.value = savedTheme;
+    boardThemeSelect.dispatchEvent(new Event('change'));
+});
+
+const openingBookCheck = document.getElementById('openingBookCheck');
+
+openingBookCheck.onchange = function() {
+    useOpeningBook = this.checked;
+    console.log(`AI Opening Book Enabled: ${useOpeningBook}`);
+};
+
+///////////////////////
+
+/**
+ * 자가 대국 시작 함수 (확장판)
+ * @param {number} totalGames - 반복할 총 대국 수
+ * @param {number} midDepth - 설정할 미들게임 탐색 깊이
+ * @param {number} endDepth - 설정할 엔드게임 탐색 깊이
+ * @param {number} speed - 수 사이의 딜레이 (ms)
+ */
+function startSelfPlay(totalGames = 1, midDepth = 3, endDepth = 5, speed = 50) {
+    isSelfPlayMode = true;
+    remainingSelfPlayGames = totalGames;
+    selfPlayDelay = speed;
+    gameMode = 'ai';
+  
+    // 전적 초기화
+    selfPlayResults = { white: 0, black: 0, draw: 0, totalCompleted: 0, targetGames: totalGames };
+    
+    // UI 표시
+    document.getElementById('selfPlayDashboard').style.display = 'block';
+    updateScoreboardUI();
+
+    // 뎁스 설정 반영
+    middlegame_depth = midDepth;
+    endgame_depth = endDepth;
+
+    console.log(`%c[Self-Play] 자가 학습 모드 활성화`, "color: #4CAF50; font-weight: bold;");
+    console.log(`- 목표 대국 수: ${totalGames}판`);
+    console.log(`- 설정 뎁스: 미들(${midDepth}) / 엔드(${endDepth})`);
+    console.log(`- 이동 속도: ${speed}ms`);
+
+    // 즉시 첫 게임 시작
+    resetGame();
+}
+//startSelfPlay(1,3,3,250)
+
+function stopSelfPlay() {
+    isSelfPlayMode = false;
+    remainingSelfPlayGames = 0; // 대국 예약 취소
+  
+    // [추가] 자가 대국 대시보드 숨기기
+    const dashboard = document.getElementById('selfPlayDashboard');
+    if (dashboard) {
+        dashboard.style.display = 'none';
+    }
+  
+    console.log("%c[Self-Play] 자가 대국이 중지되었습니다.", "color: #f44336; font-weight: bold;");
+  
+    // 결과 요약 출력
+    console.table({
+        "백 승": selfPlayResults.white,
+        "흑 승": selfPlayResults.black,
+        "무승부": selfPlayResults.draw,
+        "총 대국": selfPlayResults.totalCompleted
+    });
+}
+
+/**
+ * 자가 대국 상태에서 AI의 색상을 자동으로 전환해주는 래퍼 함수
+ */
+function triggerNextSelfMove() {
+    if (!isSelfPlayMode || gameOver) return;
+    
+    // 자가 대국 중에는 현재 턴을 무조건 AI 색상으로 간주
+    aiColor = currentTurn;
+    setTimeout(aiMove, selfPlayDelay);
+}
+
+/**
+ * 학습된 모든 가중치를 초기화하고 게임을 리셋합니다.
+ * (CodePen 호환 버전)
+ */
+function resetAITuning() {
+    if (confirm("AI의 모든 가중치 학습 데이터를 초기화하시겠습니까?")) {
+        // 1. 로컬 스토리지 삭제
+        localStorage.removeItem('chess_eval_weights');
+        
+        // 2. 현재 메모리의 가중치를 기본값으로 덮어씌움
+        // (깊은 복사를 위해 JSON 방식을 사용합니다)
+        eval_weights = JSON.parse(JSON.stringify(DEFAULT_EVAL_WEIGHTS));
+        
+        // 3. 현재 진행 중인 게임이 있다면 초기화
+        resetGame();
+        
+        console.log("%c[System] AI 가중치가 초기화되었습니다.", "color: #f44336; font-weight: bold;");
+        alert("AI 가중치가 초기화되었습니다.");
+    }
+}
+
+/**
+ * 현재 학습된 가중치 상태를 콘솔에 출력합니다.
+ */
+function showCurrentWeights() {
+    console.log(JSON.stringify(eval_weights, null, 2));
+}
+
+/**
+ * Endgame DB 저장 기능을 켜거나 끕니다.
+ * @param {boolean} enable - true(켜기), false(끄기)
+ */
+function toggleEndgameDB(enable) {
+    isEndgameDBEnabled = enable;
+    const status = enable ? "활성화" : "비활성화";
+    const color = enable ? "#4CAF50" : "#f44336";
+    console.log(`%c[System] Endgame DB 저장이 ${status}되었습니다.`, `color: ${color}; font-weight: bold;`);
+}
+
+/**
+ * Self-Tuning(가중치 학습) 기능을 켜거나 끕니다.
+ * @param {boolean} enable - true(켜기), false(끄기)
+ */
+function toggleSelfTuning(enable) {
+    isSelfTuningEnabled = enable;
+    const status = enable ? "활성화" : "비활성화";
+    const color = enable ? "#4CAF50" : "#f44336";
+    console.log(`%c[System] 가중치 파인 튜닝 학습이 ${status}되었습니다.`, `color: ${color}; font-weight: bold;`);
+}
+
+// 전적 UI 업데이트 함수
+function updateScoreboardUI() {
+    document.getElementById('whiteWins').textContent = selfPlayResults.white;
+    document.getElementById('blackWins').textContent = selfPlayResults.black;
+    document.getElementById('drawCount').textContent = selfPlayResults.draw;
+    document.getElementById('currentGameNum').textContent = selfPlayResults.totalCompleted;
+    document.getElementById('totalTargetGames').textContent = selfPlayResults.targetGames;
+
+    // 승률 계산 (백 기준 승률 예시)
+    if (selfPlayResults.totalCompleted > 0) {
+        const rate = ((selfPlayResults.white + (selfPlayResults.draw * 0.5)) / selfPlayResults.totalCompleted * 100).toFixed(1);
+        document.getElementById('winRate').textContent = rate + "%";
+    }
+}
+//////////////////////
