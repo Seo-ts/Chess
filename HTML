@@ -12,6 +12,31 @@
     <!-- ... 기존 보드 및 상태 표시 ... -->
     <div id="status" style="display: none; font-size: 20px; margin-bottom: 10px;">AI Thinking...</div>
   
+  //
+  <!-- 전적 표시용 UI -->
+<div id="selfPlayDashboard" style="background: #312e2b; color: white; padding: 15px; border-radius: 8px; margin-bottom: 10px; display: none; font-family: sans-serif;">
+    <h3 style="margin-top: 0; color: #779556;">🤖 AI Self-Play 전적</h3>
+    <div style="display: flex; justify-content: space-around; text-align: center;">
+        <div>
+            <div style="font-size: 0.9em; color: #aaa;">백 (White)</div>
+            <div id="whiteWins" style="font-size: 1.5em; font-weight: bold;">0</div>
+        </div>
+        <div>
+            <div style="font-size: 0.9em; color: #aaa;">무승부 (Draw)</div>
+            <div id="drawCount" style="font-size: 1.5em; font-weight: bold;">0</div>
+        </div>
+        <div>
+            <div style="font-size: 0.9em; color: #aaa;">흑 (Black)</div>
+            <div id="blackWins" style="font-size: 1.5em; font-weight: bold;">0</div>
+        </div>
+    </div>
+    <div style="margin-top: 10px; font-size: 0.85em; text-align: center; border-top: 1px solid #444; padding-top: 10px;">
+        진행 중: <span id="currentGameNum">0</span> / <span id="totalTargetGames">0</span> 
+        (승률: <span id="winRate">0%</span>)
+    </div>
+</div>
+  //
+  
   <div class="chess-clocks">
     <div id="blackClock" class="clock">Black: 10:00</div>
     <div id="whiteClock" class="clock">White: 10:00</div>
