@@ -1,8 +1,8 @@
 # Chess
 
-ai self tuning 기능 추가
-ai 자가 대국 기능 추가
-탐색 종료 시점에 checkt상태면 => depth +1 
+ai self tuning 기능 추가|
+ai 자가 대국 기능 추가|
+탐색 종료 시점에 checkt상태면 => depth +1 |
 
 //==============================================
 
